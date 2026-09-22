@@ -37,6 +37,8 @@ type When struct {
 	Instant     time.Time
 	Offset      time.Duration
 	OffsetKnown bool
+	// Year is the calendar year at the place the photo was taken.
+	// A UTC instant on New Year's Eve can be the next year locally.
 	Year        int
 	Source      string
 	TZStep      string

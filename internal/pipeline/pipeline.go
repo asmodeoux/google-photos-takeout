@@ -1629,6 +1629,17 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	if rep.TagErrors > 0 {
 		return ExitTagErrors, rep, nil
 	}
+	bad, err := YearMismatches(opt.Results)
+	if err != nil {
+		return ExitReconcile, rep, err
+	}
+	if len(bad) > 0 {
+		n := len(bad)
+		if n > 8 {
+			n = 8
+		}
+		return ExitReconcile, rep, fmt.Errorf("%d files are in the wrong year folder, for example: %s", len(bad), strings.Join(bad[:n], "; "))
+	}
 	_ = ctx
 	_ = j
 	return ExitOK, rep, nil

@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestE2EAndResume(t *testing.T) {
@@ -65,6 +67,13 @@ func TestE2EAndResume(t *testing.T) {
 	vcode, _, verr := Verify(ctx, Options{Results: out})
 	if verr != nil && vcode == ExitReconcile {
 		t.Fatal(verr)
+	}
+	bad, err := YearMismatches(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bad) > 0 {
+		t.Fatalf("year folder does not match the file date:\n%s", strings.Join(bad, "\n"))
 	}
 	_ = json.Marshal
 }
@@ -130,6 +139,56 @@ func tinyPNG() []byte {
 		0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xfe,
 		0x02, 0xfe, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45,
 		0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+	}
+}
+
+func TestNewYearFolderUsesCaptureTimezone(t *testing.T) {
+	if _, err := exec.LookPath("exiftool"); err != nil {
+		t.Skip("exiftool not installed")
+	}
+	dir := t.TempDir()
+	arch := filepath.Join(dir, "archives")
+	out := filepath.Join(dir, "results")
+	if err := os.MkdirAll(arch, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jpeg := mustJPEG(t)
+	westJPEG := append([]byte(nil), jpeg...)
+	westJPEG[len(westJPEG)-3] ^= 0x01
+	// 2016-12-31 21:30 UTC is 2017-01-01 00:30 at UTC+3.
+	east := time.Date(2016, 12, 31, 21, 30, 0, 0, time.UTC).Unix()
+	// 2018-01-01 07:30 UTC is 2017-12-31 23:30 at UTC-8.
+	west := time.Date(2018, 1, 1, 7, 30, 0, 0, time.UTC).Unix()
+	writeZip(t, filepath.Join(arch, "takeout-20200101T000000Z-1-001.zip"), map[string][]byte{
+		"Takeout/Google Photos/Photos from 2016/east.jpg":                            jpeg,
+		"Takeout/Google Photos/Photos from 2016/east.jpg.supplemental-metadata.json": sidecar("east.jpg", east, 55.75, 37.62),
+		"Takeout/Google Photos/Photos from 2018/west.jpg":                            westJPEG,
+		"Takeout/Google Photos/Photos from 2018/west.jpg.supplemental-metadata.json": sidecar("west.jpg", west, 34.05, -118.25),
+	})
+	code, _, err := Run(context.Background(), Options{
+		Archives: arch, Results: out, Albums: "none", Progress: "plain", Quiet: true, Stdout: &bytes.Buffer{},
+	})
+	if code != ExitOK {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(out, "2017", "east.jpg")); err != nil {
+		t.Fatal("east photo should be filed in 2017, not the UTC year 2016")
+	}
+	if _, err := os.Stat(filepath.Join(out, "2016", "east.jpg")); err == nil {
+		t.Fatal("east photo was filed by UTC year")
+	}
+	if _, err := os.Stat(filepath.Join(out, "2017", "west.jpg")); err != nil {
+		t.Fatal("west photo should be filed in 2017, not the UTC year 2018")
+	}
+	if _, err := os.Stat(filepath.Join(out, "2018", "west.jpg")); err == nil {
+		t.Fatal("west photo was filed by UTC year")
+	}
+	bad, err := YearMismatches(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bad) > 0 {
+		t.Fatal(strings.Join(bad, "\n"))
 	}
 }
 
