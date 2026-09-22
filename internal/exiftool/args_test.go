@@ -1,6 +1,7 @@
 package exiftool
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,12 +15,17 @@ func TestArgsAbsoluteAndOffset(t *testing.T) {
 		Offset: 3 * time.Hour, OffsetKnown: true, Year: 2016,
 		HasGPS: true, Lat: 55.75, Lon: 37.62, HasAlt: true, Alt: 12,
 	}
-	args, err := Args(Plan{Path: "/tmp/-file.jpg", Kind: "jpeg", WriteDates: true, WriteGPS: true, When: when, Description: "hi"})
+	path := filepath.Join(t.TempDir(), "-file.jpg")
+	args, err := Args(Plan{Path: path, Kind: "jpeg", WriteDates: true, WriteGPS: true, When: when, Description: "hi"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(args, "\n")
-	if !strings.Contains(joined, "/tmp/-file.jpg") {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(joined, abs) {
 		t.Fatal("absolute path")
 	}
 	if !strings.Contains(joined, "OffsetTimeOriginal=+03:00") {
