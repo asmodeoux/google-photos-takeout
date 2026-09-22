@@ -1,0 +1,31 @@
+# Takeout input, the built library, and extracts. Never commit these.
+archives/*
+!archives/.gitkeep
+results/*
+!results/.gitkeep
+results-sample/*
+!results-sample/.gitkeep
+unzipped/*
+!unzipped/.gitkeep
+
+# Media, even if it lands outside those folders.
+*.zip
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.webp
+*.heic
+*.heif
+*.mov
+*.mp4
+*.m4v
+*.mkv
+*.avi
+
+.DS_Store
+/takeout
+*.partial
+*_original
+*_exiftool_tmp
+results/.takeout/

@@ -1,0 +1,44 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: ExifTool
+        run: brew install exiftool
+      - run: go vet ./...
+      - run: go test ./...
+
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - run: go test ./...
+      - run: go build -o takeout ./cmd/takeout
+
+  privacy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: refuse tracked personal libraries
+        run: |
+          set -e
+          if git ls-files | grep -E '^(archives|results|unzipped)/' | grep -v '\.gitkeep$'; then
+            echo "personal Takeout paths are tracked" >&2
+            exit 1
+          fi
+          git ls-files -z | xargs -0 -r du -b | awk '$1 > 1000000 { print; bad=1 } END { exit bad }'

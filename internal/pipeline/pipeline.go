@@ -1,0 +1,1621 @@
+// Package pipeline runs a Takeout: index the zips, match sidecars, write
+// Apple Photos tags, and file a year library plus album clones.
+package pipeline
+
+import (
+	"archive/zip"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/asmodeoux/google-photos-takeout/internal/dates"
+	"github.com/asmodeoux/google-photos-takeout/internal/exiftool"
+	"github.com/asmodeoux/google-photos-takeout/internal/match"
+	"github.com/asmodeoux/google-photos-takeout/internal/media"
+	"github.com/asmodeoux/google-photos-takeout/internal/names"
+	"github.com/asmodeoux/google-photos-takeout/internal/progress"
+	"github.com/asmodeoux/google-photos-takeout/internal/state"
+	"github.com/asmodeoux/google-photos-takeout/internal/zipindex"
+)
+
+const (
+	ExitOK        = 0
+	ExitPreflight = 2
+	ExitReconcile = 3
+	ExitTagErrors = 4
+	ExitInterrupt = 130
+)
+
+// Options is a non-interactive run.
+type Options struct {
+	Archives           string
+	Results            string
+	DefaultTZ          string
+	Sample             int
+	DryRun             bool
+	KeepUnzipped       bool
+	UnzipOnly          bool
+	Albums             string // clone, copy, none
+	IncludeTrash       bool
+	ExcludeScreenshots bool
+	Quiet              bool
+	Progress           string
+	Exiftool           string
+	FFmpeg             string
+	FailAfter          int
+	Stdout             io.Writer
+	Now                time.Time
+}
+
+// Report is takeout-report.json.
+type Report struct {
+	SchemaVersion  int            `json:"schema_version"`
+	Media          int            `json:"media"`
+	Sidecars       int            `json:"sidecars"`
+	Library        int            `json:"library"`
+	Unknown        int            `json:"unknown"`
+	Placeholders   int            `json:"placeholders"`
+	LivePairs      int            `json:"live_pairs"`
+	IDCopied       int            `json:"identifier_copied"`
+	TagErrors      int            `json:"tag_errors"`
+	Motions        int            `json:"motion_photos"`
+	Screenshots    int            `json:"screenshots_excluded"`
+	Unique         int            `json:"unique"`
+	WithGPS        int            `json:"with_gps"`
+	Formats        map[string]int `json:"formats"`
+	Years          map[string]int `json:"years"`
+	Sources        map[string]int `json:"date_sources"`
+	TZ             map[string]int `json:"timezone_steps"`
+	ExtensionFixes []string       `json:"extension_fixes,omitempty"`
+	NearDuplicates []string       `json:"near_duplicates,omitempty"`
+	Conflicts      []string       `json:"conflicts,omitempty"`
+	PlaceholderURL []string       `json:"placeholder_urls,omitempty"`
+	Errors         []string       `json:"errors,omitempty"`
+	Filesystem     string         `json:"filesystem"`
+	Import         string         `json:"import"`
+}
+
+type scInfo struct {
+	dates.Sidecar
+	Title string
+	Name  string
+	URL   string
+}
+
+type member struct {
+	zipindex.Entry
+	sc *scInfo
+}
+
+type group struct {
+	id          string
+	members     []member
+	canon       int
+	sha         string
+	staged      string
+	when        dates.When
+	trueType    string
+	placeholder bool
+	outRel      string
+	live        int
+	pairKey     string
+	video       bool
+	contentID   string
+	setID       string
+	embAt       time.Time
+	haveEmb     bool
+	idCopied    bool
+	motion      bool
+	tagErr      string
+	skip        bool
+}
+
+// Run executes check, unzip, or the full organize.
+func Run(ctx context.Context, opt Options) (int, Report, error) {
+	if opt.Stdout == nil {
+		opt.Stdout = os.Stdout
+	}
+	if opt.Albums == "" {
+		opt.Albums = "clone"
+	}
+	if opt.Now.IsZero() {
+		opt.Now = time.Now()
+	}
+	rep := Report{SchemaVersion: 1, Years: map[string]int{}, Sources: map[string]int{}, TZ: map[string]int{}, Formats: map[string]int{}, Import: importText()}
+	pr := progress.New(opt.Stdout, opt.Progress, opt.Quiet)
+
+	zips, err := filepath.Glob(filepath.Join(opt.Archives, "*.zip"))
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	sort.Strings(zips)
+	if len(zips) == 0 {
+		return ExitPreflight, rep, fmt.Errorf("no zip files in %s. Put Google Takeout zips there and run again", opt.Archives)
+	}
+	pr.Phase(fmt.Sprintf("index  %d zip(s)", len(zips)))
+	idx, err := zipindex.Open(zips)
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	if len(idx.ExportIDs) > 1 {
+		rep.Errors = append(rep.Errors, "mixed export ids: "+strings.Join(idx.ExportIDs, ", "))
+	}
+	if len(idx.Missing) > 0 {
+		return ExitPreflight, rep, fmt.Errorf("takeout is missing zip part(s) %v. Re-download those parts before running", idx.Missing)
+	}
+	if _, err := exiftool.Look(opt.Exiftool); err != nil && !opt.UnzipOnly {
+		return ExitPreflight, rep, err
+	}
+
+	if opt.UnzipOnly || opt.KeepUnzipped {
+		pr.Phase("unzip")
+		if err := unzipAll(ctx, zips, filepath.Join(filepath.Dir(opt.Archives), "unzipped")); err != nil {
+			return ExitPreflight, rep, err
+		}
+		if opt.UnzipOnly {
+			fmt.Fprintln(opt.Stdout, "unzipped")
+			return ExitOK, rep, nil
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return ExitInterrupt, rep, err
+	}
+
+	readers, err := openZips(zips)
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	defer closeZips(readers)
+
+	sidecars := map[string]*scInfo{}
+	var items []member
+	var skippedJSON []zipindex.Entry
+	pr.Phase("read sidecars")
+	for _, e := range idx.Entries {
+		if e.JSON {
+			if zipindex.IsSkippedJSON(e.Name) {
+				skippedJSON = append(skippedJSON, e)
+				continue
+			}
+			sc, err := readSidecar(readers, e)
+			if err != nil {
+				rep.Errors = append(rep.Errors, e.Name+": "+err.Error())
+				skippedJSON = append(skippedJSON, e)
+				continue
+			}
+			sidecars[match.Key(e.RelFolder, e.Name)] = sc
+			skippedJSON = append(skippedJSON, e)
+			rep.Sidecars++
+			continue
+		}
+		items = append(items, member{Entry: e})
+	}
+	rep.Media = len(items)
+	var screenshots []zipindex.Entry
+	if opt.ExcludeScreenshots {
+		kept := items[:0]
+		for _, m := range items {
+			if names.IsScreenshot(m.Name) {
+				screenshots = append(screenshots, m.Entry)
+				continue
+			}
+			kept = append(kept, m)
+		}
+		items = kept
+	}
+	rep.Screenshots = len(screenshots)
+
+	for i := range items {
+		m := &items[i]
+		if zipindex.Classify(m.RelFolder) == zipindex.ClassTrash && !opt.IncludeTrash {
+			continue
+		}
+		for _, c := range match.Candidates(m.Name) {
+			if sc, ok := sidecars[match.Key(m.RelFolder, c)]; ok {
+				m.sc = sc
+				if !match.TitleAgrees(m.Name, sc.Title) {
+					rep.Errors = append(rep.Errors, "title mismatch "+m.Name+" vs "+sc.Title)
+				}
+				break
+			}
+		}
+	}
+
+	groups := groupBy(items)
+	rep.Unique = len(groups)
+	noteNear(&rep, groups)
+	for i := range groups {
+		pickCanon(&groups[i], &rep)
+	}
+
+	if opt.Sample > 0 && opt.Sample < len(groups) {
+		groups = sampleGroups(groups, opt.Sample)
+	}
+
+	pr.Phase(fmt.Sprintf("plan  %d unique  %d media  %d sidecars", len(groups), rep.Media, rep.Sidecars))
+	if opt.DryRun {
+		summarizeDry(opt, idx, groups, &rep)
+		fmt.Fprintln(opt.Stdout, summaryText(rep))
+		return ExitOK, rep, nil
+	}
+
+	if err := os.MkdirAll(opt.Results, 0o755); err != nil {
+		return ExitPreflight, rep, err
+	}
+	fs, err := media.Stat(opt.Results)
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	rep.Filesystem = fs.Type
+	need := estimate(groups, fs.APFS, opt.Albums)
+	if fs.Free > 0 && fs.Free < need {
+		return ExitPreflight, rep, fmt.Errorf("need about %d GB free on %s (%s), have %d GB", need/1e9, opt.Results, fs.Type, fs.Free/1e9)
+	}
+	if !fs.APFS && opt.Albums == "clone" {
+		opt.Albums = "copy"
+		fmt.Fprintf(opt.Stdout, "note: %s is not APFS, so album folders are full copies\n", fs.Type)
+	}
+
+	journal, err := state.OpenJournal(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	defer journal.Close()
+	cleanPartial(filepath.Join(opt.Results, ".takeout", "staging"))
+
+	pr.Phase("copy")
+	placed := 0
+	for i := range groups {
+		if err := ctx.Err(); err != nil {
+			return ExitInterrupt, rep, nil
+		}
+		g := &groups[i]
+		if g.placeholder {
+			if err := extractGroup(readers, g, opt.Results, journal); err != nil {
+				rep.Errors = append(rep.Errors, err.Error())
+				g.tagErr = err.Error()
+			}
+			continue
+		}
+		if zipindex.Classify(g.members[g.canon].RelFolder) == zipindex.ClassTrash && !opt.IncludeTrash {
+			g.skip = true
+			continue
+		}
+		if err := extractGroup(readers, g, opt.Results, journal); err != nil {
+			rep.Errors = append(rep.Errors, err.Error())
+			g.tagErr = err.Error()
+			continue
+		}
+		placed++
+		pr.Tick(placed, len(groups), g.members[g.canon].Name)
+		if opt.FailAfter > 0 && placed >= opt.FailAfter {
+			_ = journal.Put(state.Rec{ID: g.id, Stage: "staged", SHA: g.sha})
+			return ExitInterrupt, rep, fmt.Errorf("stopped after %d files; run the same command to resume", placed)
+		}
+	}
+	for i := range groups {
+		if groups[i].trueType == "webm" && groups[i].staged != "" {
+			if err := transcodeOrKeep(opt, &groups[i]); err != nil {
+				rep.Errors = append(rep.Errors, err.Error())
+				groups[i].tagErr = err.Error()
+			}
+		}
+	}
+
+	readEmbedded(opt, groups)
+	resolveDates(groups, opt)
+	pairLive(groups, &rep)
+	ws := whens(groups)
+	dates.ApplyFallback(ws, opt.DefaultTZ)
+	for i := range groups {
+		groups[i].when = ws[i]
+	}
+
+	const tagWorkers = 4
+	clients := make([]*exiftool.Client, 0, tagWorkers)
+	for n := 0; n < tagWorkers; n++ {
+		c, err := exiftool.Start(opt.Exiftool)
+		if err != nil {
+			for _, cl := range clients {
+				cl.Close()
+			}
+			return ExitPreflight, rep, err
+		}
+		clients = append(clients, c)
+	}
+	defer func() {
+		for _, c := range clients {
+			c.Close()
+		}
+	}()
+
+	pr.Phase("tags")
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var repMu sync.Mutex
+	var tagged int
+	for _, c := range clients {
+		wg.Add(1)
+		go func(c *exiftool.Client) {
+			defer wg.Done()
+			for i := range jobs {
+				g := &groups[i]
+				if err := writeTags(c, opt.Results, g, i); err != nil {
+					g.tagErr = err.Error()
+					repMu.Lock()
+					rep.TagErrors++
+					if len(rep.Errors) < 40 {
+						rep.Errors = append(rep.Errors, g.members[g.canon].Name+": "+err.Error())
+					}
+					repMu.Unlock()
+				} else if rec, ok := journal.Get(g.id); !ok || (rec.Stage != "placed" && rec.Stage != "cloned") {
+					_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "tagged"})
+				}
+				repMu.Lock()
+				tagged++
+				n := tagged
+				repMu.Unlock()
+				pr.Tick(n, len(groups), g.members[g.canon].Name)
+			}
+		}(c)
+	}
+	stopped := false
+	for i := range groups {
+		if ctx.Err() != nil {
+			stopped = true
+			break
+		}
+		g := &groups[i]
+		if g.skip || g.placeholder || g.staged == "" || g.trueType == "webm" {
+			continue
+		}
+		if rec, ok := journal.Get(g.id); ok && rec.Stage == "tagged" {
+			continue
+		}
+		jobs <- i
+	}
+	close(jobs)
+	wg.Wait()
+	if stopped {
+		return ExitInterrupt, rep, nil
+	}
+	client := clients[0]
+
+	pr.Phase("place")
+	used := map[string]int{}
+	for i := range groups {
+		g := &groups[i]
+		if g.skip || g.staged == "" {
+			continue
+		}
+		if err := place(opt, g, used, journal); err != nil {
+			g.tagErr = err.Error()
+			rep.Errors = append(rep.Errors, err.Error())
+		}
+	}
+	pr.Phase("albums")
+	if opt.Albums != "none" {
+		for i := range groups {
+			if err := albums(opt, groups, i, journal); err != nil {
+				rep.Errors = append(rep.Errors, err.Error())
+			}
+		}
+	}
+
+	fates := ledger(idx.Entries, groups, skippedJSON, screenshots, opt.IncludeTrash)
+	if opt.Sample == 0 && !state.Balanced(fates, len(idx.Entries)) {
+		rep.Errors = append(rep.Errors, fmt.Sprintf("ledger %d != zip entries %d", len(fates), len(idx.Entries)))
+		fillReport(&rep, groups)
+		writeReport(opt.Results, rep)
+		fmt.Fprintln(opt.Stdout, summaryText(rep))
+		return ExitReconcile, rep, fmt.Errorf("reconciliation failed: %d fates, %d entries", len(fates), len(idx.Entries))
+	}
+	fillReport(&rep, groups)
+	// readback of written dates
+	verifyTags(client, opt.Results, groups, &rep)
+	writeReport(opt.Results, rep)
+	fmt.Fprintln(opt.Stdout, summaryText(rep))
+	if rep.TagErrors > 0 {
+		return ExitTagErrors, rep, nil
+	}
+	return ExitOK, rep, nil
+}
+
+func whens(gs []group) []dates.When {
+	out := make([]dates.When, len(gs))
+	for i := range gs {
+		out[i] = gs[i].when
+	}
+	return out
+}
+
+func groupBy(media []member) []group {
+	m := map[string]*group{}
+	var order []string
+	for _, mem := range media {
+		id := fmt.Sprintf("%d:%08x", mem.Size, mem.CRC32)
+		g, ok := m[id]
+		if !ok {
+			g = &group{id: id, live: -1}
+			m[id] = g
+			order = append(order, id)
+		}
+		g.members = append(g.members, mem)
+	}
+	out := make([]group, 0, len(order))
+	for _, id := range order {
+		out = append(out, *m[id])
+	}
+	return out
+}
+
+func pickCanon(g *group, rep *Report) {
+	best := 0
+	bestScore := 9
+	for i, m := range g.members {
+		score := 3
+		switch zipindex.Classify(m.RelFolder) {
+		case zipindex.ClassLibrary:
+			if strings.Contains(strings.ToLower(m.RelFolder), "photo") || strings.HasPrefix(m.RelFolder, "Фото") || strings.Contains(m.RelFolder, "Foto") {
+				score = 0
+			} else {
+				score = 1
+			}
+		case zipindex.ClassTrash:
+			score = 4
+		}
+		if score < bestScore {
+			bestScore = score
+			best = i
+		}
+	}
+	g.canon = best
+	var times []time.Time
+	for _, m := range g.members {
+		if m.sc != nil && m.sc.Taken != nil {
+			times = append(times, *m.sc.Taken)
+		}
+	}
+	if len(g.members) >= 3 && dates.DistinctTimes(times, time.Minute) >= 3 && g.members[0].Size <= 16*1024 {
+		g.placeholder = true
+		rep.Placeholders++
+		for _, m := range g.members {
+			if m.sc != nil && m.sc.URL != "" {
+				rep.PlaceholderURL = append(rep.PlaceholderURL, m.Name+" "+m.sc.URL)
+			}
+		}
+	}
+	chosen := g.members[g.canon]
+	var chosenT time.Time
+	if chosen.sc != nil && chosen.sc.Taken != nil {
+		chosenT = *chosen.sc.Taken
+	}
+	for _, m := range g.members {
+		if m.sc != nil && m.sc.Taken != nil && !chosenT.IsZero() && !dates.SameInstant(*m.sc.Taken, chosenT, 60*time.Second) {
+			rep.Conflicts = append(rep.Conflicts, m.Name)
+			break
+		}
+	}
+}
+
+func noteNear(rep *Report, groups []group) {
+	type hit struct{ id, folder string }
+	by := map[string][]hit{}
+	for _, g := range groups {
+		for _, m := range g.members {
+			k := names.Key(m.Name)
+			by[k] = append(by[k], hit{g.id, m.RelFolder})
+		}
+	}
+	for name, hits := range by {
+		ids := map[string]bool{}
+		for _, h := range hits {
+			ids[h.id] = true
+		}
+		if len(ids) > 1 {
+			rep.NearDuplicates = append(rep.NearDuplicates, name)
+		}
+	}
+	sort.Strings(rep.NearDuplicates)
+}
+
+func sampleGroups(gs []group, n int) []group {
+	if n >= len(gs) {
+		return gs
+	}
+	step := len(gs) / n
+	if step < 1 {
+		step = 1
+	}
+	var out []group
+	for i := 0; i < len(gs) && len(out) < n; i += step {
+		out = append(out, gs[i])
+	}
+	return out
+}
+
+type zipSet struct {
+	r  *zip.ReadCloser
+	by map[string]*zip.File
+}
+
+func openZips(paths []string) (map[string]*zipSet, error) {
+	m := map[string]*zipSet{}
+	for _, p := range paths {
+		r, err := zip.OpenReader(p)
+		if err != nil {
+			closeZips(m)
+			return nil, fmt.Errorf("open %s: %w. Re-download this zip if it is truncated", p, err)
+		}
+		by := make(map[string]*zip.File, len(r.File))
+		for _, f := range r.File {
+			by[f.Name] = f
+		}
+		m[p] = &zipSet{r: r, by: by}
+	}
+	return m, nil
+}
+
+func closeZips(m map[string]*zipSet) {
+	for _, r := range m {
+		r.r.Close()
+	}
+}
+
+func zipFile(readers map[string]*zipSet, e zipindex.Entry) (*zip.File, error) {
+	r := readers[e.ZipPath]
+	if r == nil {
+		return nil, fmt.Errorf("zip not open: %s", e.ZipPath)
+	}
+	f := r.by[e.EntryName]
+	if f == nil {
+		return nil, fmt.Errorf("missing %s in %s", e.EntryName, e.ZipPath)
+	}
+	return f, nil
+}
+
+func readSidecar(readers map[string]*zipSet, e zipindex.Entry) (*scInfo, error) {
+	f, err := zipFile(readers, e)
+	if err != nil {
+		return nil, err
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w. Re-download the zip if the CRC check failed", e.Name, err)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, err
+	}
+	sc := &scInfo{Name: e.Name}
+	if t, ok := raw["title"].(string); ok {
+		sc.Title = t
+	}
+	if d, ok := raw["description"].(string); ok {
+		sc.Description = d
+	}
+	if u, ok := raw["url"].(string); ok {
+		sc.URL = u
+	}
+	sc.Taken = jsonTime(raw, "photoTakenTime")
+	sc.Creation = jsonTime(raw, "creationTime")
+	if lat, lon, alt, ok := jsonGeo(raw, "geoData"); ok {
+		sc.Lat, sc.Lon, sc.Alt, sc.HasGeo, sc.HasAlt = lat, lon, alt, true, true
+	} else if lat, lon, alt, ok := jsonGeo(raw, "geoDataExif"); ok {
+		sc.Lat, sc.Lon, sc.Alt, sc.HasGeo, sc.HasAlt = lat, lon, alt, true, true
+	}
+	sc.Sidecar = dates.Sidecar{
+		Title: sc.Title, Description: sc.Description,
+		Taken: sc.Taken, Creation: sc.Creation,
+		Lat: sc.Lat, Lon: sc.Lon, Alt: sc.Alt, HasGeo: sc.HasGeo, HasAlt: sc.HasAlt, URL: sc.URL,
+	}
+	return sc, nil
+}
+
+func jsonTime(raw map[string]any, key string) *time.Time {
+	obj, _ := raw[key].(map[string]any)
+	if obj == nil {
+		return nil
+	}
+	var sec int64
+	switch v := obj["timestamp"].(type) {
+	case string:
+		sec, _ = strconv.ParseInt(v, 10, 64)
+	case float64:
+		sec = int64(v)
+	default:
+		return nil
+	}
+	if sec <= 0 {
+		return nil
+	}
+	t := time.Unix(sec, 0).UTC()
+	return &t
+}
+
+func jsonGeo(raw map[string]any, key string) (lat, lon, alt float64, ok bool) {
+	obj, _ := raw[key].(map[string]any)
+	if obj == nil {
+		return 0, 0, 0, false
+	}
+	lat, _ = asFloat(obj["latitude"])
+	lon, _ = asFloat(obj["longitude"])
+	alt, _ = asFloat(obj["altitude"])
+	if lat == 0 && lon == 0 {
+		return 0, 0, 0, false
+	}
+	return lat, lon, alt, true
+}
+
+func asFloat(v any) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case json.Number:
+		f, err := n.Float64()
+		return f, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func extractGroup(readers map[string]*zipSet, g *group, results string, journal *state.Journal) error {
+	if rec, ok := journal.Get(g.id); ok && rec.SHA != "" && rec.Stage != "" && rec.Stage != "staged" {
+		p := filepath.Join(results, ".takeout", "staging", rec.SHA)
+		if rec.Path != "" {
+			p = filepath.Join(results, rec.Path)
+		}
+		if st, err := os.Stat(p); err == nil && st.Size() > 0 {
+			g.staged = p
+			g.sha = rec.SHA
+			g.outRel = rec.Path
+			hf, err := os.Open(p)
+			if err == nil {
+				buf := make([]byte, 32)
+				n, _ := hf.Read(buf)
+				hf.Close()
+				g.trueType = zipindex.Sniff(buf[:n])
+			}
+			if g.trueType == "" || g.trueType == "unknown" {
+				g.trueType = kindFromExt(g.members[g.canon].Name)
+			}
+			return nil
+		}
+	}
+	m := g.members[g.canon]
+	f, err := zipFile(readers, m.Entry)
+	if err != nil {
+		return err
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer rc.Close()
+	staging := filepath.Join(results, ".takeout", "staging")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		return err
+	}
+	partial := filepath.Join(staging, g.id+".partial")
+	partial = strings.ReplaceAll(partial, ":", "_")
+	out, err := os.Create(partial)
+	if err != nil {
+		return err
+	}
+	h := sha256.New()
+	head := make([]byte, 0, 32)
+	buf := make([]byte, 1024*1024)
+	first := true
+	for {
+		n, rerr := rc.Read(buf)
+		if n > 0 {
+			if first {
+				take := n
+				if take > 32 {
+					take = 32
+				}
+				head = append(head, buf[:take]...)
+				first = false
+			}
+			if _, err := out.Write(buf[:n]); err != nil {
+				out.Close()
+				return err
+			}
+			_, _ = h.Write(buf[:n])
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			out.Close()
+			return fmt.Errorf("%s: %w. Re-download the zip if this is a CRC error", m.Name, rerr)
+		}
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	// CRC is checked by zip.Reader when the file is fully read. A short read would have errored.
+	g.trueType = zipindex.Sniff(head)
+	g.sha = hex.EncodeToString(h.Sum(nil))
+	final := filepath.Join(staging, g.sha)
+	if err := os.Rename(partial, final); err != nil {
+		return err
+	}
+	g.staged = final
+	if g.trueType == "jpeg" {
+		b, _ := os.ReadFile(final)
+		if len(b) > 256*1024 {
+			b = b[:256*1024]
+		}
+		if bytesContains(b, []byte("MotionPhoto")) || strings.HasSuffix(strings.ToLower(m.Name), ".mp") {
+			g.motion = true
+		}
+	}
+	return journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "staged"})
+}
+
+func bytesContains(b, sub []byte) bool {
+	return len(sub) == 0 || (len(b) >= len(sub) && func() bool { return strings.Contains(string(b), string(sub)) }())
+}
+
+func kindFromExt(p string) string {
+	switch strings.ToLower(filepath.Ext(p)) {
+	case ".jpg", ".jpeg":
+		return "jpeg"
+	case ".png":
+		return "png"
+	case ".gif":
+		return "gif"
+	case ".webp":
+		return "webp"
+	case ".heic":
+		return "heic"
+	case ".mov":
+		return "mov"
+	case ".mp4", ".m4v":
+		return "mp4"
+	default:
+		return "unknown"
+	}
+}
+
+func cleanPartial(dir string) {
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".partial") {
+			_ = os.Remove(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+func readEmbedded(opt Options, groups []group) {
+	// one-shot batches; a missing read is treated as no embedded tags
+	var paths []string
+	index := map[string]int{}
+	for i := range groups {
+		if groups[i].staged == "" {
+			continue
+		}
+		paths = append(paths, groups[i].staged)
+		index[groups[i].staged] = i
+	}
+	bin := opt.Exiftool
+	if bin == "" {
+		bin = "exiftool"
+	}
+	for start := 0; start < len(paths); start += 40 {
+		end := start + 40
+		if end > len(paths) {
+			end = len(paths)
+		}
+		args := append([]string{"-api", "QuickTimeUTC=1", "-json", "-n",
+			"-DateTimeOriginal", "-OffsetTimeOriginal", "-CreationDate", "-CreateDate",
+			"-GPSLatitude", "-GPSLongitude", "-ContentIdentifier"}, paths[start:end]...)
+		out, err := exec.Command(bin, args...).Output()
+		if err != nil {
+			continue
+		}
+		var rows []map[string]any
+		if json.Unmarshal(out, &rows) != nil {
+			continue
+		}
+		for _, row := range rows {
+			src, _ := row["SourceFile"].(string)
+			i, ok := index[src]
+			if !ok {
+				continue
+			}
+			g := &groups[i]
+			if s, _ := row["ContentIdentifier"].(string); s != "" {
+				g.contentID = s
+			}
+			emb := dates.Embedded{}
+			if s, _ := row["DateTimeOriginal"].(string); s != "" {
+				if t, ok := parseExifTime(s); ok {
+					emb.DTO = &t
+					emb.HasDTO = true
+					g.haveEmb = true
+					g.embAt = t
+					if d, ok := parseOffset(fmt.Sprint(row["OffsetTimeOriginal"])); ok {
+						wall := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.UTC)
+						g.embAt = wall.Add(-d)
+					}
+				}
+			}
+			if s, _ := row["OffsetTimeOriginal"].(string); s != "" {
+				if d, ok := parseOffset(s); ok {
+					emb.Offset = &d
+				}
+			}
+			if lat, ok := asFloat(row["GPSLatitude"]); ok {
+				if lon, ok2 := asFloat(row["GPSLongitude"]); ok2 && !(lat == 0 && lon == 0) {
+					emb.HasGPS = true
+					emb.Lat, emb.Lon = lat, lon
+				}
+			}
+			g.when = dates.FromSidecar(side(g), emb, opt.Now)
+			if !g.when.OK {
+				if w := dates.FromEmbedded(emb, opt.Now); w.OK {
+					g.when = w
+				}
+			}
+			_ = emb
+		}
+	}
+}
+
+func side(g *group) dates.Sidecar {
+	m := g.members[g.canon]
+	if m.sc != nil {
+		return m.sc.Sidecar
+	}
+	for _, mem := range g.members {
+		if mem.sc != nil {
+			return mem.sc.Sidecar
+		}
+	}
+	return dates.Sidecar{}
+}
+
+func parseExifTime(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) >= 19 {
+		t, err := time.Parse("2006:01:02 15:04:05", s[:19])
+		if err == nil {
+			return t, true
+		}
+	}
+	return time.Time{}, false
+}
+
+func parseOffset(s string) (time.Duration, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) < 6 || (s[0] != '+' && s[0] != '-') {
+		return 0, false
+	}
+	h, err1 := strconv.Atoi(s[1:3])
+	m, err2 := strconv.Atoi(s[4:6])
+	if err1 != nil || err2 != nil {
+		return 0, false
+	}
+	d := time.Duration(h)*time.Hour + time.Duration(m)*time.Minute
+	if s[0] == '-' {
+		d = -d
+	}
+	return d, true
+}
+
+func pairLive(groups []group, rep *Report) {
+	byID := map[string][]int{}
+	byStem := map[string][]int{}
+	for i := range groups {
+		g := &groups[i]
+		if g.placeholder || g.skip {
+			continue
+		}
+		if g.staged == "" && g.trueType == "" {
+			continue
+		}
+		if g.contentID != "" {
+			byID[g.contentID] = append(byID[g.contentID], i)
+		}
+		folder := g.members[g.canon].RelFolder
+		stem := names.Stem(g.members[g.canon].Name)
+		byStem[folder+"\x00"+names.Key(stem)] = append(byStem[folder+"\x00"+names.Key(stem)], i)
+	}
+	link := func(a, b int) {
+		if groups[a].live >= 0 || groups[b].live >= 0 {
+			return
+		}
+		ia, ib := imageSide(groups[a].trueType), imageSide(groups[b].trueType)
+		va, vb := videoSide(groups[a].trueType), videoSide(groups[b].trueType)
+		if ia && vb {
+			groups[a].live, groups[b].live = b, a
+			groups[b].video = true
+		} else if ib && va {
+			groups[b].live, groups[a].live = a, b
+			groups[a].video = true
+		} else {
+			return
+		}
+		pk := groups[a].id
+		if groups[b].id < pk {
+			pk = groups[b].id
+		}
+		groups[a].pairKey, groups[b].pairKey = pk, pk
+	}
+	for _, idxs := range byID {
+		if len(idxs) == 2 {
+			link(idxs[0], idxs[1])
+		}
+	}
+	for _, idxs := range byStem {
+		var imgs, vids []int
+		for _, i := range idxs {
+			if imageSide(groups[i].trueType) {
+				imgs = append(imgs, i)
+			}
+			if videoSide(groups[i].trueType) {
+				vids = append(vids, i)
+			}
+		}
+		if len(vids) != 1 || len(imgs) == 0 {
+			continue
+		}
+		best := imgs[0]
+		for _, i := range imgs {
+			if groups[i].trueType == "heic" {
+				best = i
+			}
+		}
+		link(best, vids[0])
+	}
+	for i := range groups {
+		g := &groups[i]
+		if g.live < 0 {
+			continue
+		}
+		rep.LivePairs++
+		other := &groups[g.live]
+		if g.video {
+			continue // count pairs once, from the still
+		}
+		if !g.when.OK && other.when.OK {
+			g.when = other.when
+			g.when.Source = dates.SrcLive
+		}
+		if other.video && !other.when.OK && g.when.OK {
+			other.when = g.when
+			other.when.Source = dates.SrcLive
+		}
+		switch {
+		case g.contentID == "" && other.contentID != "":
+			g.setID = other.contentID
+			g.idCopied = true
+			rep.IDCopied++
+		case other.contentID == "" && g.contentID != "":
+			other.setID = g.contentID
+			other.idCopied = true
+			rep.IDCopied++
+		case g.contentID == "" && other.contentID == "":
+			id := newID()
+			g.setID, other.setID = id, id
+			g.idCopied, other.idCopied = true, true
+			rep.IDCopied++
+		}
+	}
+	rep.LivePairs /= 2
+}
+
+func imageSide(t string) bool {
+	switch t {
+	case "jpeg", "png", "gif", "webp", "heic":
+		return true
+	}
+	return false
+}
+func videoSide(t string) bool {
+	return t == "mp4" || t == "mov" || t == "webm"
+}
+
+func newID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6] = (b[6] & 0x0f) | 0x40
+	b[8] = (b[8] & 0x3f) | 0x80
+	s := hex.EncodeToString(b[:])
+	return s[0:8] + "-" + s[8:12] + "-" + s[12:16] + "-" + s[16:20] + "-" + s[20:]
+}
+
+func resolveDates(groups []group, opt Options) {
+	for i := range groups {
+		g := &groups[i]
+		if g.skip || g.placeholder {
+			continue
+		}
+		if !g.when.OK {
+			if w := dates.FromSidecar(side(g), dates.Embedded{}, opt.Now); w.OK {
+				g.when = w
+			}
+		}
+		if !g.when.OK {
+			g.when = dates.FromFilename(g.members[g.canon].Name, opt.Now)
+		}
+	}
+}
+
+func writeTags(c *exiftool.Client, results string, g *group, id int) error {
+	if !exiftool.Within(results, g.staged) && !strings.Contains(g.staged, ".takeout") {
+		return fmt.Errorf("refusing to write outside results: %s", g.staged)
+	}
+	var existing *time.Time
+	if g.haveEmb {
+		existing = &g.embAt
+	}
+	writeDates := exiftool.ShouldWriteDates(existing, g.when)
+	plan := exiftool.Plan{
+		Path: g.staged, Kind: g.trueType, When: g.when,
+		WriteDates:   writeDates,
+		WriteGPS:     g.when.HasGPS && writeDates,
+		Description:  g.when.Description,
+		SetContentID: g.setID,
+	}
+	if !plan.WriteDates && !plan.WriteGPS && plan.SetContentID == "" && plan.Description == "" {
+		return nil
+	}
+	args, err := exiftool.Args(plan)
+	if err != nil {
+		return err
+	}
+	out, err := c.Exec(args, id+1)
+	if err != nil {
+		return err
+	}
+	if !exiftool.Updated(out) && (plan.WriteDates || plan.WriteGPS || plan.SetContentID != "") {
+		return fmt.Errorf("exiftool did not update: %s", strings.TrimSpace(out))
+	}
+	return nil
+}
+
+func place(opt Options, g *group, used map[string]int, journal *state.Journal) error {
+	if rec, ok := journal.Get(g.id); ok && rec.Stage == "placed" || recStage(journal, g.id) == "cloned" {
+		if rec, ok := journal.Get(g.id); ok && rec.Path != "" {
+			if _, err := os.Stat(filepath.Join(opt.Results, rec.Path)); err == nil {
+				g.outRel = rec.Path
+				return nil
+			}
+		}
+	}
+	orig := g.members[g.canon].Name
+	ext := names.OutputExt(g.trueType, orig, g.video)
+	base := names.ReplaceExt(orig, ext)
+	base, changed := names.Sanitize(base)
+	if changed || !strings.EqualFold(filepath.Ext(orig), ext) && ext != "" {
+		// listed by caller via report fill
+	}
+	var dir string
+	switch {
+	case g.placeholder:
+		dir = "placeholders"
+	case g.trueType == "webm" && strings.HasPrefix(g.outRel, "not-importable"):
+		dir = "not-importable"
+	case !g.when.OK:
+		dir = "unknown"
+	default:
+		dir = strconv.Itoa(g.when.Year)
+	}
+	if g.trueType == "webm" && g.outRel == "" && !ffmpegOK(opt.FFmpeg) {
+		dir = "not-importable"
+	}
+	name := base
+	stemKey := names.Key(dir + "/" + names.Stem(base))
+	if g.pairKey != "" {
+		if n, ok := used["pair:"+g.pairKey]; ok {
+			name = names.WithIndex(base, n)
+		} else {
+			used[stemKey]++
+			used["pair:"+g.pairKey] = used[stemKey]
+			name = names.WithIndex(base, used[stemKey])
+		}
+	} else {
+		used[stemKey]++
+		name = names.WithIndex(base, used[stemKey])
+	}
+	rel := filepath.Join(dir, name)
+	dest := filepath.Join(opt.Results, rel)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	if _, err := os.Stat(dest); err == nil {
+		used[stemKey]++
+		name = names.WithIndex(base, used[stemKey])
+		rel = filepath.Join(dir, name)
+		dest = filepath.Join(opt.Results, rel)
+	}
+	if err := os.Rename(g.staged, dest); err != nil {
+		if err := media.Clone(g.staged, dest); err != nil {
+			return err
+		}
+		_ = os.Remove(g.staged)
+	}
+	g.outRel = rel
+	g.staged = dest
+	if g.when.OK {
+		_ = media.SetTimes(dest, g.when.Local())
+	}
+	_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "placed", Path: rel, Year: dir, Name: name})
+	return nil
+}
+
+func recStage(j *state.Journal, id string) string {
+	r, ok := j.Get(id)
+	if !ok {
+		return ""
+	}
+	return r.Stage
+}
+
+func albums(opt Options, groups []group, i int, journal *state.Journal) error {
+	g := &groups[i]
+	if g.outRel == "" || g.placeholder || strings.HasPrefix(g.outRel, "not-importable") {
+		return nil
+	}
+	if rec, ok := journal.Get(g.id); ok && rec.Stage == "cloned" {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, m := range g.members {
+		if zipindex.Classify(m.RelFolder) != zipindex.ClassAlbum {
+			continue
+		}
+		if seen[m.RelFolder] {
+			continue
+		}
+		seen[m.RelFolder] = true
+		ext := names.OutputExt(g.trueType, m.Name, g.video)
+		base, _ := names.Sanitize(names.ReplaceExt(m.Name, ext))
+		dest := filepath.Join(opt.Results, "albums", m.RelFolder, base)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return err
+		}
+		src := filepath.Join(opt.Results, g.outRel)
+		if err := linkAlbum(opt.Albums, src, dest); err != nil {
+			return err
+		}
+		if g.when.OK {
+			_ = media.SetTimes(dest, g.when.Local())
+		}
+	}
+	return journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "cloned", Path: g.outRel})
+}
+
+func linkAlbum(mode, src, dst string) error {
+	if _, err := os.Stat(dst); err == nil {
+		return nil
+	}
+	if mode == "copy" {
+		return mediaCloneCopy(src, dst)
+	}
+	return media.Clone(src, dst)
+}
+
+func mediaCloneCopy(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(out, in)
+	cerr := out.Close()
+	if err != nil {
+		return err
+	}
+	return cerr
+}
+
+func transcodeOrKeep(opt Options, g *group) error {
+	if !ffmpegOK(opt.FFmpeg) {
+		return nil
+	}
+	bin := opt.FFmpeg
+	if bin == "" {
+		bin = "ffmpeg"
+	}
+	dest := strings.TrimSuffix(g.staged, filepath.Ext(g.staged)) + ".mov"
+	cmd := exec.Command(bin, "-y", "-i", g.staged, "-map", "0:v:0", "-map", "0:a?",
+		"-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
+		"-movflags", "+faststart", dest)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("ffmpeg: %v %s", err, out)
+	}
+	_ = os.Remove(g.staged)
+	g.staged = dest
+	g.trueType = "mov"
+	return nil
+}
+
+func ffmpegOK(bin string) bool {
+	if bin == "" {
+		bin = "ffmpeg"
+	}
+	_, err := exec.LookPath(bin)
+	return err == nil
+}
+
+func estimate(gs []group, apfs bool, albums string) uint64 {
+	var n uint64
+	for _, g := range gs {
+		if len(g.members) == 0 {
+			continue
+		}
+		n += g.members[0].Size
+		if !apfs && albums != "none" {
+			for _, m := range g.members {
+				if zipindex.Classify(m.RelFolder) == zipindex.ClassAlbum {
+					n += m.Size
+				}
+			}
+		}
+	}
+	return n + n/10
+}
+
+func ledger(entries []zipindex.Entry, groups []group, skipped, screenshots []zipindex.Entry, includeTrash bool) []state.Fate {
+	fateOf := map[string]string{}
+	for _, g := range groups {
+		fate := "library"
+		switch {
+		case g.placeholder:
+			fate = "placeholder"
+		case g.skip:
+			fate = "excluded-trash"
+		case strings.HasPrefix(g.outRel, "not-importable"):
+			fate = "not-importable"
+		case g.tagErr != "":
+			fate = "error"
+		}
+		for _, m := range g.members {
+			key := m.ZipPath + "\x00" + m.EntryName
+			if zipindex.Classify(m.RelFolder) == zipindex.ClassTrash && !includeTrash {
+				fateOf[key] = "excluded-trash"
+				continue
+			}
+			if zipindex.Classify(m.RelFolder) == zipindex.ClassAlbum && !g.placeholder {
+				fateOf[key] = "album-clone"
+				continue
+			}
+			fateOf[key] = fate
+		}
+	}
+	for _, e := range skipped {
+		fateOf[e.ZipPath+"\x00"+e.EntryName] = "skipped-json"
+	}
+	for _, e := range screenshots {
+		fateOf[e.ZipPath+"\x00"+e.EntryName] = "excluded-screenshot"
+	}
+	var out []state.Fate
+	for _, e := range entries {
+		f := fateOf[e.ZipPath+"\x00"+e.EntryName]
+		if f == "" {
+			f = "error"
+		}
+		out = append(out, state.Fate{Zip: e.ZipPath, Entry: e.EntryName, Fate: f})
+	}
+	return out
+}
+
+func fillReport(rep *Report, groups []group) {
+	for _, g := range groups {
+		if g.motion {
+			rep.Motions++
+		}
+		if g.placeholder || g.skip {
+			continue
+		}
+		kind := g.trueType
+		if kind == "" && len(g.members) > 0 {
+			kind = kindFromExt(g.members[g.canon].Name)
+		}
+		if kind == "" {
+			kind = "unknown"
+		}
+		if rep.Formats == nil {
+			rep.Formats = map[string]int{}
+		}
+		rep.Formats[kind]++
+		if g.when.HasGPS {
+			rep.WithGPS++
+		}
+		if !g.when.OK {
+			rep.Unknown++
+			continue
+		}
+		if strings.HasPrefix(g.outRel, "unknown") {
+			rep.Unknown++
+			continue
+		}
+		rep.Library++
+		rep.Years[strconv.Itoa(g.when.Year)]++
+		rep.Sources[g.when.Source]++
+		if g.when.TZStep != "" {
+			rep.TZ[g.when.TZStep]++
+		}
+		orig := g.members[g.canon].Name
+		if filepath.Ext(orig) != filepath.Ext(g.outRel) && filepath.Ext(g.outRel) != "" {
+			rep.ExtensionFixes = append(rep.ExtensionFixes, orig+" -> "+filepath.Base(g.outRel))
+		}
+	}
+}
+
+func verifyTags(c *exiftool.Client, results string, groups []group, rep *Report) {
+	_ = c
+	type item struct {
+		i    int
+		path string
+		day  string
+	}
+	var items []item
+	for i := range groups {
+		g := &groups[i]
+		if g.outRel == "" || !g.when.OK || g.placeholder || g.trueType == "gif" || g.trueType == "webm" {
+			continue
+		}
+		if g.when.Source == dates.SrcEmbedded {
+			continue
+		}
+		items = append(items, item{i, filepath.Join(results, g.outRel), g.when.Local().Format("2006:01:02")})
+	}
+	for start := 0; start < len(items); start += 40 {
+		end := start + 40
+		if end > len(items) {
+			end = len(items)
+		}
+		args := []string{"-api", "QuickTimeUTC=1", "-json", "-DateTimeOriginal", "-CreationDate"}
+		for _, it := range items[start:end] {
+			args = append(args, it.path)
+		}
+		out, err := exec.Command("exiftool", args...).Output()
+		if err != nil {
+			continue
+		}
+		var rows []map[string]any
+		if json.Unmarshal(out, &rows) != nil {
+			continue
+		}
+		got := map[string]string{}
+		for _, row := range rows {
+			src, _ := row["SourceFile"].(string)
+			dto, _ := row["DateTimeOriginal"].(string)
+			cre, _ := row["CreationDate"].(string)
+			got[src] = dto + " " + cre
+		}
+		for _, it := range items[start:end] {
+			if !strings.Contains(got[it.path], it.day) {
+				rep.TagErrors++
+				if len(rep.Errors) < 30 {
+					rep.Errors = append(rep.Errors, "readback "+filepath.Base(it.path))
+				}
+			}
+		}
+	}
+}
+
+func summarizeDry(opt Options, idx *zipindex.Index, groups []group, rep *Report) {
+	resolveDates(groups, opt)
+	for i := range groups {
+		if groups[i].trueType == "" && len(groups[i].members) > 0 {
+			groups[i].trueType = kindFromExt(groups[i].members[groups[i].canon].Name)
+		}
+	}
+	pairLive(groups, rep)
+	ws := whens(groups)
+	dates.ApplyFallback(ws, opt.DefaultTZ)
+	for i := range groups {
+		groups[i].when = ws[i]
+	}
+	fillReport(rep, groups)
+	fs, _ := media.Stat(opt.Results)
+	if fs.Type == "" {
+		fs, _ = media.Stat(opt.Archives)
+	}
+	rep.Filesystem = fs.Type
+	fmt.Fprintf(opt.Stdout, "parts %d  missing %v  exports %v\n", len(idx.Zips), idx.Missing, idx.ExportIDs)
+	fmt.Fprintf(opt.Stdout, "filesystem %s  free %d GB  need about %d GB\n", fs.Type, fs.Free/1e9, estimate(groups, fs.APFS, opt.Albums)/1e9)
+}
+
+func writeReport(results string, rep Report) {
+	if results == "" {
+		return
+	}
+	dir := filepath.Join(results, ".takeout")
+	_ = os.MkdirAll(dir, 0o755)
+	b, _ := json.MarshalIndent(rep, "", "  ")
+	_ = os.WriteFile(filepath.Join(dir, "report.json"), b, 0o644)
+	_ = os.WriteFile(filepath.Join(dir, "report.txt"), []byte(summaryText(rep)), 0o644)
+}
+
+func summaryText(rep Report) string {
+	var b strings.Builder
+	b.WriteString("\nReview\n")
+	fmt.Fprintf(&b, "  media in zips     %d\n", rep.Media)
+	fmt.Fprintf(&b, "  sidecars          %d\n", rep.Sidecars)
+	fmt.Fprintf(&b, "  unique files      %d\n", rep.Unique)
+	fmt.Fprintf(&b, "  dated             %d\n", rep.Library)
+	fmt.Fprintf(&b, "  unknown date      %d\n", rep.Unknown)
+	fmt.Fprintf(&b, "  with GPS          %d\n", rep.WithGPS)
+	without := rep.Library + rep.Unknown - rep.WithGPS
+	if without < 0 {
+		without = 0
+	}
+	fmt.Fprintf(&b, "  without GPS       %d\n", without)
+	fmt.Fprintf(&b, "  live photo pairs  %d\n", rep.LivePairs)
+	fmt.Fprintf(&b, "  placeholders      %d\n", rep.Placeholders)
+	fmt.Fprintf(&b, "  screenshots out   %d\n", rep.Screenshots)
+	fmt.Fprintf(&b, "  tag errors        %d\n", rep.TagErrors)
+	if rep.Filesystem != "" {
+		fmt.Fprintf(&b, "  filesystem        %s\n", rep.Filesystem)
+	}
+	b.WriteString("Years\n")
+	for _, y := range sortedKeys(rep.Years) {
+		fmt.Fprintf(&b, "  %s  %d\n", y, rep.Years[y])
+	}
+	b.WriteString("Formats\n")
+	for _, k := range sortedKeys(rep.Formats) {
+		fmt.Fprintf(&b, "  %s  %d\n", k, rep.Formats[k])
+	}
+	n := len(rep.Errors)
+	if n > 8 {
+		n = 8
+	}
+	if n > 0 {
+		b.WriteString("Errors\n")
+		for _, e := range rep.Errors[:n] {
+			fmt.Fprintf(&b, "  %s\n", e)
+		}
+	}
+	fmt.Fprintf(&b, "\n%s\n", rep.Import)
+	return b.String()
+}
+
+func sortedKeys(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func importText() string {
+	return "Import results/<year> and results/unknown into Apple Photos, not results/albums. import-photos --library <Photos library> uploads to iCloud when that library is the system one; pass --confirm-icloud to allow that."
+}
+
+func unzipAll(ctx context.Context, zips []string, dest string) error {
+	for _, z := range zips {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		r, err := zip.OpenReader(z)
+		if err != nil {
+			return err
+		}
+		base := strings.TrimSuffix(filepath.Base(z), ".zip")
+		root := filepath.Join(dest, base)
+		for _, f := range r.File {
+			if err := zipindex.CheckPath(f.Name); err != nil {
+				r.Close()
+				return err
+			}
+			target := filepath.Join(root, f.Name)
+			if f.FileInfo().IsDir() {
+				_ = os.MkdirAll(target, 0o755)
+				continue
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				r.Close()
+				return err
+			}
+			rc, err := f.Open()
+			if err != nil {
+				r.Close()
+				return err
+			}
+			out, err := os.Create(target)
+			if err != nil {
+				rc.Close()
+				r.Close()
+				return err
+			}
+			_, err = io.Copy(out, rc)
+			out.Close()
+			rc.Close()
+			if err != nil {
+				r.Close()
+				return fmt.Errorf("%s: %w. Re-download the zip if this is a CRC error", f.Name, err)
+			}
+		}
+		r.Close()
+		_ = os.WriteFile(filepath.Join(root, ".complete"), []byte("ok\n"), 0o644)
+	}
+	return nil
+}
+
+// Verify checks that every journal path still exists and the report has no tag errors.
+func Verify(ctx context.Context, opt Options) (int, Report, error) {
+	var rep Report
+	b, err := os.ReadFile(filepath.Join(opt.Results, ".takeout", "report.json"))
+	if err != nil {
+		return ExitPreflight, rep, fmt.Errorf("no report in %s. Run takeout run first", opt.Results)
+	}
+	if err := json.Unmarshal(b, &rep); err != nil {
+		return ExitReconcile, rep, err
+	}
+	j, err := state.OpenJournal(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	defer j.Close()
+	raw, err := os.ReadFile(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	missing := 0
+	for _, line := range strings.Split(string(raw), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var rec state.Rec
+		if json.Unmarshal([]byte(line), &rec) != nil || rec.Path == "" {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(opt.Results, rec.Path)); err != nil {
+			missing++
+		}
+	}
+	if missing > 0 {
+		return ExitReconcile, rep, fmt.Errorf("%d journal files are missing", missing)
+	}
+	if rep.TagErrors > 0 {
+		return ExitTagErrors, rep, nil
+	}
+	_ = ctx
+	_ = j
+	return ExitOK, rep, nil
+}
+
+// Status prints one line from the journal.
+func Status(results string) string {
+	j, err := state.OpenJournal(filepath.Join(results, ".takeout", "state.jsonl"))
+	if err != nil {
+		return "no run yet"
+	}
+	defer j.Close()
+	// count by reading file
+	b, err := os.ReadFile(filepath.Join(results, ".takeout", "state.jsonl"))
+	if err != nil {
+		return "no run yet"
+	}
+	n := strings.Count(string(b), "\n")
+	return fmt.Sprintf("journal lines %d", n)
+}
