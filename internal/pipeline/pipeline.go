@@ -864,6 +864,19 @@ func readEmbedded(opt Options, groups []group) {
 					emb.Offset = &d
 				}
 			}
+			// Videos store the capture time in CreationDate, not DateTimeOriginal.
+			// Without this, every later run rewrites the video and Finder shows today's date.
+			if !g.haveEmb {
+				if s, _ := row["CreationDate"].(string); s != "" {
+					if inst, ok := parseCreationInstant(s); ok {
+						g.haveEmb = true
+						g.embAt = inst
+						emb.HasDTO = true
+						wall := inst
+						emb.DTO = &wall
+					}
+				}
+			}
 			if lat, ok := asFloat(row["GPSLatitude"]); ok {
 				if lon, ok2 := asFloat(row["GPSLongitude"]); ok2 && !(lat == 0 && lon == 0) {
 					emb.HasGPS = true
@@ -901,6 +914,19 @@ func parseExifTime(s string) (time.Time, bool) {
 		if err == nil {
 			return t, true
 		}
+	}
+	return time.Time{}, false
+}
+
+func parseCreationInstant(s string) (time.Time, bool) {
+	s = strings.TrimSpace(s)
+	if len(s) >= 25 {
+		if t, err := time.Parse("2006:01:02 15:04:05Z07:00", s[:25]); err == nil {
+			return t.UTC(), true
+		}
+	}
+	if t, ok := parseExifTime(s); ok {
+		return t.UTC(), true
 	}
 	return time.Time{}, false
 }
@@ -1090,6 +1116,10 @@ func writeTags(c *exiftool.Client, results string, g *group, id int) error {
 	}
 	if !exiftool.Updated(out) && (plan.WriteDates || plan.WriteGPS || plan.SetContentID != "") {
 		return fmt.Errorf("exiftool did not update: %s", strings.TrimSpace(out))
+	}
+	// ExifTool replaces the file, which clears the macOS creation date.
+	if g.when.OK {
+		_ = media.SetTimes(g.staged, g.when.Local())
 	}
 	return nil
 }
