@@ -103,6 +103,27 @@ func TestAlbumDirsCollisions(t *testing.T) {
 	if len(renames) != 4 {
 		t.Fatalf("renames %v", renames)
 	}
+	// A suffixed name must not land on another album that already has it.
+	three, _ := albumDirs([]group{mk("Trip"), mk("trip"), mk("Trip (2)"), mk("Trip.2019"), mk("trip.2019")}, names.Portable)
+	seenKeys := map[string]string{}
+	for f, d := range three {
+		if other, dup := seenKeys[names.Key(d)]; dup {
+			t.Fatalf("albums %q and %q share folder %q", f, other, d)
+		}
+		seenKeys[names.Key(d)] = f
+	}
+	if three["trip.2019"] != "trip.2019 (2)" {
+		t.Errorf("dotted album name got %q", three["trip.2019"])
+	}
+	long := strings.Repeat("é", 127) + "x"
+	for _, d := range func() map[string]string {
+		m, _ := albumDirs([]group{mk(long), mk(strings.ToUpper(long))}, names.Portable)
+		return m
+	}() {
+		if len(d) > 255 {
+			t.Errorf("folder name of %d bytes", len(d))
+		}
+	}
 	apple, _ := albumDirs(groups, names.Apple)
 	if apple["A?"] != "A?" || apple["trip"] != "trip (2)" {
 		t.Fatalf("apple %v", apple)

@@ -1744,16 +1744,18 @@ func albumDirs(groups []group, rule names.Rule) (map[string]string, []string) {
 	}
 	sort.Strings(folders)
 	out := map[string]string{}
-	used := map[string]int{}
+	// taken holds every folder name chosen so far, compared the way the disk
+	// compares names, so "trip (2)" cannot land on an album already called
+	// "Trip (2)".
+	taken := map[string]bool{}
 	var renames []string
 	for _, f := range folders {
 		clean, _ := names.SanitizeDir(f, rule)
-		key := names.Key(clean)
-		used[key]++
 		dir := clean
-		if used[key] > 1 {
-			dir = clean + " (" + strconv.Itoa(used[key]) + ")"
+		for n := 2; taken[names.Key(dir)]; n++ {
+			dir = names.DirWithIndex(clean, n)
 		}
+		taken[names.Key(dir)] = true
 		out[f] = dir
 		if dir != f {
 			renames = append(renames, f+" -> "+dir)

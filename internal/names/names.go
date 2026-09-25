@@ -139,6 +139,24 @@ func WithIndex(name string, n int) string {
 	return stem + suffix + ext
 }
 
+// DirWithIndex is WithIndex for a folder name: " (n)" goes at the end, since a
+// dot in a folder name does not start an extension, and the result still fits
+// in 255 bytes.
+func DirWithIndex(name string, n int) string {
+	if n <= 1 {
+		return name
+	}
+	suffix := " (" + itoa(n) + ")"
+	for len(name)+len(suffix) > maxName {
+		_, size := utf8.DecodeLastRuneInString(name)
+		if size == 0 {
+			break
+		}
+		name = name[:len(name)-size]
+	}
+	return name + suffix
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"
