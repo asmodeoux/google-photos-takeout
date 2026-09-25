@@ -225,7 +225,7 @@ With a prebuilt binary use `.\takeout.exe` or `./takeout`. `takeout <command> -h
 |---|---|---|
 | 0 | Done, and every zip entry is accounted for. | Import. |
 | 2 | Stopped before writing: missing part, ExifTool, disk space. | Follow the `Fix:` line and run again. |
-| 3 | The report does not add up. | Open a bug with the counts from `report.json`. |
+| 3 | Some files from the zips are not in the library, or a check of the library failed. | See `failed_files` in `report.json` (a damaged zip part must be downloaded again) or the message, fix it, and run again. |
 | 4 | Finished, but some files did not take tags. | The library is usable. See `tag_error_files` in `report.json`. |
 | 130 | Interrupted. | Run the same command; it resumes. |
 
@@ -300,6 +300,9 @@ With a prebuilt binary use `.\takeout.exe` or `./takeout`. `takeout <command> -h
 
 <a id="verify"></a>
 **No report in the results folder.** Run `run` first, or pass the folder it wrote with `--results`.
+
+<a id="exit-3"></a>
+**Exit 3.** Files from the zips did not reach the library: `failed_files` in `report.json` lists each one with the reason, usually a damaged zip part ("checksum error"). Download that part again from takeout.google.com, replace it in the archives folder, and run the same command; finished files are kept. From `verify`, exit 3 also means a library file is missing or in the wrong year folder.
 
 **Exit 4.** Some files did not take tags. They are still in the library with their original metadata. `tag_error_files` in `report.json` lists them with ExifTool's message.
 

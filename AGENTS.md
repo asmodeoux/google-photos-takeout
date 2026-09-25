@@ -12,9 +12,10 @@ Commands below are for macOS and Linux. On Windows, use PowerShell and replace `
 4. Success is exit code 0 and `./takeout verify` exiting 0. Quote `media`, `library`, `unknown`, `live_pairs`, `placeholders`, and `tag_errors` from `results/.takeout/report.json`, plus `names_rule` and any `album_renames`. On Windows also quote `retries`.
 5. Exit 2: every message has a `Fix:` line and a `See: README.md#...` section. Fix the problem (missing zip, missing ExifTool, disk space) and run again.
 6. Exit 130: run the same command again. It resumes.
-7. Exit 4: the library is usable. Report the tag error count and the paths in `tag_error_files`. Do not delete files to "clean up".
-8. Never unzip by hand, write a one-off script, delete anything in `archives/`, edit files in `results/` by hand, or `git add` `archives/`, `results/`, or `unzipped/`.
-9. `import-photos` is macOS only and experimental: it checks the library and prints an AppleScript, and does not import yet. It needs `--library`. If that path is the system Photos library, stop and tell the user it will upload to iCloud. Run it only after they pass `--confirm-icloud`. While testing on a machine that already has a personal library, import one photo and one video into a new library, not the system library.
+7. Exit 3: quote `failed` and `failed_files` from `report.json`. A damaged zip part must be downloaded again by the user; then run the same command. Do not try to repair zips.
+8. Exit 4: the library is usable. Report the tag error count and the paths in `tag_error_files`. Do not delete files to "clean up".
+9. Never unzip by hand, write a one-off script, delete anything in `archives/`, edit files in `results/` by hand, or `git add` `archives/`, `results/`, or `unzipped/`.
+10. `import-photos` is macOS only and experimental: it checks the library and prints an AppleScript, and does not import yet. It needs `--library`. If that path is the system Photos library, stop and tell the user it will upload to iCloud. Run it only after they pass `--confirm-icloud`. While testing on a machine that already has a personal library, import one photo and one video into a new library, not the system library.
 
 The first `go build` downloads modules. Writing to an external disk needs permission outside the workspace. On Windows, `winget install` changes PATH only for new windows; `takeout.cmd` says so when Go or ExifTool is installed but not found. Photos Automation permission is a macOS dialog the user has to approve.
 

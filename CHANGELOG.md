@@ -28,6 +28,10 @@ Windows support, and fixes for export layouts reported against other Takeout too
 - Files are never overwritten or dropped when two names become the same after sanitizing or differ only in case.
 - Identical-looking files are confirmed by content before being treated as duplicates.
 - Captions with line breaks no longer split ExifTool arguments.
+- A damaged zip entry or a file that cannot be placed makes run and verify exit 3 and is listed in failed_files, instead of vanishing behind exit 0.
+- A crash at any point resumes without "(2)" duplicates, in the library or in albums. The results lock ends with the process, and a resumed run needs disk space only for what is left.
+- AVI, MPEG, WMV, MTS and BMP files are placed with file dates instead of failing every run with tag errors.
+- Two albums can no longer end up in one folder, unzip never overwrites a file, and Ctrl+C stops every phase.
 - `.3gp` videos keep their extension.
 - `._` AppleDouble files, `.DS_Store`, `Thumbs.db` and `__MACOSX` entries are ignored; symbolic links in zips are skipped.
 
