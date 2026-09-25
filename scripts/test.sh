@@ -11,6 +11,10 @@ go test -count=1 -v ./... >"$log" 2>&1
 status=$?
 grep -E '^(ok|FAIL|---|panic:)|^\s+--- FAIL' "$log" | grep -v -- '--- PASS' | grep -v -- '--- SKIP'
 grep -E -- '--- FAIL|^panic:' "$log" >/dev/null && sed -n '/--- FAIL/,/^FAIL/p' "$log" | head -200
+# Every test by name, folded in the GitHub Actions log.
+[ -n "${GITHUB_ACTIONS:-}" ] && echo "::group::All test results"
+grep -E -- '--- (PASS|FAIL|SKIP)' "$log"
+[ -n "${GITHUB_ACTIONS:-}" ] && echo "::endgroup::"
 echo
 echo "Tests run: $(grep -c -- '--- PASS' "$log") passed, $(grep -c -- '--- FAIL' "$log") failed, $(grep -c -- '--- SKIP' "$log") skipped"
 unexpected=0
