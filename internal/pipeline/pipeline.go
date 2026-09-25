@@ -498,6 +498,9 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	defer closeClients(clients)
 
 	readEmbedded(clients, opt, groups, &rep)
+	if ctx.Err() != nil {
+		return ExitInterrupt, rep, nil
+	}
 	resolveDates(groups, opt)
 	pairLive(groups, &rep)
 	applyZones(groups, opt.DefaultTZ)
@@ -528,6 +531,9 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	pl := newPlacer(opt.Results, journal)
 	pl.times = times
 	for i := range groups {
+		if ctx.Err() != nil {
+			return ExitInterrupt, rep, nil
+		}
 		g := &groups[i]
 		if g.skip || g.staged == "" {
 			continue
@@ -542,6 +548,9 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		dirs, renames := albumDirs(groups, rule)
 		rep.AlbumRenames = renames
 		for i := range groups {
+			if ctx.Err() != nil {
+				return ExitInterrupt, rep, nil
+			}
 			if err := albums(opt, groups, i, dirs, pl, rule, journal); err != nil {
 				rep.Errors = append(rep.Errors, err.Error())
 			}
@@ -571,6 +580,9 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		return ExitReconcile, rep, fmt.Errorf("reconciliation failed: %d fates, %d entries", len(fates), len(idx.Entries))
 	}
 	fillReport(&rep, groups)
+	if ctx.Err() != nil {
+		return ExitInterrupt, rep, nil
+	}
 	timer.next("verify")
 	verifyTags(clients, opt.Results, groups, &rep)
 	timer.next("")
@@ -1521,16 +1533,22 @@ feed:
 		}
 	}
 	close(jobs)
-	if ctx.Err() == nil {
-		<-done
-		return false
+	select {
+	case <-done:
+		return ctx.Err() != nil
+	case <-ctx.Done():
 	}
+	// Stopping: let writes in flight finish, unless they take longer than the
+	// grace period or a second Ctrl+C says to stop now. Either way, wait for
+	// the workers, so none writes to the journal after Run has closed it.
 	select {
 	case <-done:
 	case <-time.After(grace):
 		kill()
+		<-done
 	case <-force:
 		kill()
+		<-done
 	}
 	return true
 }

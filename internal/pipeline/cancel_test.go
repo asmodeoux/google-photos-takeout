@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -96,8 +97,10 @@ func TestTagAllKillsAfterGraceOrForce(t *testing.T) {
 		killed := make(chan struct{})
 		result := make(chan bool)
 		var rep Report
+		// A real kill makes the ExifTool call in flight return.
+		kill := func() { close(killed); close(r.release) }
 		go func() {
-			result <- tagAll(ctx, force, grace, []tagRunner{r}, func() { close(killed) }, groups, results, j, &rep, &timeLog{}, nil)
+			result <- tagAll(ctx, force, grace, []tagRunner{r}, kill, groups, results, j, &rep, &timeLog{}, nil)
 		}()
 		<-r.started
 		cancel()
@@ -112,6 +115,40 @@ func TestTagAllKillsAfterGraceOrForce(t *testing.T) {
 		if !<-result {
 			t.Fatal("not stopped")
 		}
-		close(r.release)
+	}
+}
+
+// tagAll must not return while a worker can still write to the journal.
+func TestTagAllWaitsForWorkersAfterKill(t *testing.T) {
+	results := t.TempDir()
+	j := openTestJournal(t, results)
+	groups := cancelGroups(t, 1)
+	groups[0].staged = results + "/.takeout/staging/" + groups[0].id
+	write(t, groups[0].staged, "x")
+	r := &blockingRunner{started: make(chan struct{}, 1), release: make(chan struct{})}
+	ctx, cancel := context.WithCancel(context.Background())
+	var returned atomic.Bool
+	kill := func() {
+		go func() {
+			time.Sleep(200 * time.Millisecond)
+			if returned.Load() {
+				t.Error("tagAll returned before the killed write came back")
+			}
+			close(r.release)
+		}()
+	}
+	var rep Report
+	done := make(chan struct{})
+	go func() {
+		tagAll(ctx, nil, 50*time.Millisecond, []tagRunner{r}, kill, groups, results, j, &rep, &timeLog{}, nil)
+		returned.Store(true)
+		close(done)
+	}()
+	<-r.started
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tagAll never returned")
 	}
 }

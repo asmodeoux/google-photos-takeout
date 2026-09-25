@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/asmodeoux/google-photos-takeout/internal/awake"
 	"github.com/asmodeoux/google-photos-takeout/internal/photos"
@@ -140,7 +141,7 @@ func run(cmd string, args []string, stdout, stderr io.Writer) int {
 		return importPhotos(c.library, c.results, c.confirm, stdout, stderr)
 	}
 
-	ctx, force, stop := interrupts(stderr)
+	ctx, force, stop := interrupts(stderr, make(chan os.Signal, 3), os.Exit)
 	defer stop()
 	opt := pipeline.Options{
 		Archives: c.archives, Results: c.results, DefaultTZ: c.tz, Sample: c.sample,
@@ -196,12 +197,17 @@ func nextLine(launcher string, c *cli) string {
 	return b.String()
 }
 
+// forceExitAfter is how long a second Ctrl+C waits for takeout to stop on its
+// own before the process exits.
+var forceExitAfter = 10 * time.Second
+
 // interrupts cancels ctx on the first Ctrl+C, so files in flight finish, and
-// closes force on the second, which stops ExifTool and ffmpeg at once.
-func interrupts(stderr io.Writer) (context.Context, <-chan struct{}, func()) {
+// closes force on the second, which stops ExifTool and ffmpeg at once. If the
+// run has not ended soon after that, or on a third Ctrl+C, exit is called.
+// The journal is written file by file, so the next run resumes either way.
+func interrupts(stderr io.Writer, sig chan os.Signal, exit func(int)) (context.Context, <-chan struct{}, func()) {
 	ctx, cancel := context.WithCancel(context.Background())
 	force := make(chan struct{})
-	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, stopSignals...)
 	go func() {
 		n := 0
@@ -212,7 +218,14 @@ func interrupts(stderr io.Writer) (context.Context, <-chan struct{}, func()) {
 				fmt.Fprintln(stderr, "stopping after the files in flight. Press Ctrl+C again to stop now.")
 				cancel()
 			case 2:
+				fmt.Fprintln(stderr, "stopping now.")
 				close(force)
+				time.AfterFunc(forceExitAfter, func() {
+					fmt.Fprintln(stderr, "interrupted. Run the same command to resume.")
+					exit(130)
+				})
+			default:
+				exit(130)
 			}
 		}
 	}()

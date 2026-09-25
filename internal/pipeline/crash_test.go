@@ -244,3 +244,43 @@ func TestPendingLeavesOutFinishedFiles(t *testing.T) {
 		t.Fatalf("need %d, want 3300", got)
 	}
 }
+
+// cancelAt cancels the run when progress prints the named phase, the way a
+// Ctrl+C at that moment would.
+type cancelAt struct {
+	phase  string
+	cancel context.CancelFunc
+}
+
+func (c *cancelAt) Write(p []byte) (int, error) {
+	for _, line := range strings.Split(string(p), "\n") {
+		if strings.TrimSpace(line) == c.phase {
+			c.cancel()
+		}
+	}
+	return len(p), nil
+}
+
+// Ctrl+C in any later phase stops the run with 130, and the resumed run ends
+// with exactly the files an uninterrupted run makes.
+func TestCtrlCInLatePhasesResumesCleanly(t *testing.T) {
+	requireTools(t, "exiftool")
+	arch, clean := crashTakeout(t)
+	runOK(t, arch, clean)
+	want := snapshot(t, clean)
+	for _, phase := range []string{"place", "albums"} {
+		t.Run(phase, func(t *testing.T) {
+			results := filepath.Join(t.TempDir(), "results")
+			ctx, cancel := context.WithCancel(context.Background())
+			opt := testOptions(arch, results)
+			opt.Quiet = false
+			opt.Stdout = &cancelAt{phase: phase, cancel: cancel}
+			code, _, _ := Run(ctx, opt)
+			if code != ExitInterrupt {
+				t.Fatalf("exit %d, want %d", code, ExitInterrupt)
+			}
+			runOK(t, arch, results)
+			sameFiles(t, want, snapshot(t, results))
+		})
+	}
+}

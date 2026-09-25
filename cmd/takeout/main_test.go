@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/asmodeoux/google-photos-takeout/internal/pipeline"
 	"github.com/asmodeoux/google-photos-takeout/internal/testgen"
@@ -104,5 +105,42 @@ func TestCheckEndsWithNextLine(t *testing.T) {
 	want := `Next: ./takeout.sh run --archives "` + arch + `" --results "` + filepath.Join(dir, "results") + `" --default-tz Asia/Tokyo`
 	if last != want {
 		t.Errorf("last line\n got %s\nwant %s", last, want)
+	}
+}
+
+func TestInterruptsCancelThenForceThenExit(t *testing.T) {
+	old := forceExitAfter
+	forceExitAfter = 100 * time.Millisecond
+	defer func() { forceExitAfter = old }()
+	exited := make(chan int, 2)
+	sig := make(chan os.Signal, 3)
+	var errOut bytes.Buffer
+	ctx, force, stop := interrupts(&errOut, sig, func(code int) { exited <- code })
+	defer stop()
+
+	sig <- os.Interrupt
+	select {
+	case <-ctx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("first Ctrl+C did not cancel")
+	}
+	select {
+	case <-force:
+		t.Fatal("first Ctrl+C forced")
+	default:
+	}
+	sig <- os.Interrupt
+	select {
+	case <-force:
+	case <-time.After(2 * time.Second):
+		t.Fatal("second Ctrl+C did not force")
+	}
+	select {
+	case code := <-exited:
+		if code != 130 {
+			t.Fatalf("exit %d", code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("a run that does not stop after the second Ctrl+C must exit")
 	}
 }
