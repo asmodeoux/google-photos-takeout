@@ -58,10 +58,23 @@ func TestStrayArgumentIsRejected(t *testing.T) {
 	}
 }
 
+func TestShellQuote(t *testing.T) {
+	for _, c := range []struct{ in, goos, want string }{
+		{`D:\Takeout $x`, "windows", `'D:\Takeout $x'`},
+		{`D:\Bob's photos`, "windows", `'D:\Bob''s photos'`},
+		{"/Volumes/My Disk/Takeout", "darwin", `'/Volumes/My Disk/Takeout'`},
+		{"/home/me/it's `now` $HOME", "linux", `'/home/me/it'\''s ` + "`now`" + ` $HOME'`},
+	} {
+		if got := shellQuote(c.in, c.goos); got != c.want {
+			t.Errorf("shellQuote(%q, %s) = %s, want %s", c.in, c.goos, got, c.want)
+		}
+	}
+}
+
 func TestNextLine(t *testing.T) {
-	c := &cli{archives: `D:\Takeout`, results: "results", tz: "Europe/Berlin"}
-	if got := nextLine(`.\takeout.cmd`, c); got != `Next: .\takeout.cmd run --archives "D:\Takeout" --default-tz Europe/Berlin` {
-		t.Errorf("got %s", got)
+	c := &cli{archives: "My Disk/Takeout", results: "results", tz: "Europe/Berlin"}
+	if got, want := nextLine("./takeout.sh", c), "Next: ./takeout.sh run --archives "+shellQuote("My Disk/Takeout", runtime.GOOS)+" --default-tz Europe/Berlin"; got != want {
+		t.Errorf("got %s, want %s", got, want)
 	}
 	c = &cli{archives: "archives", results: "results"}
 	if got := nextLine("./takeout.sh", c); !strings.HasPrefix(got, "Next: ./takeout.sh run --default-tz Area/City\n") {
@@ -102,7 +115,7 @@ func TestCheckEndsWithNextLine(t *testing.T) {
 	}
 	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
 	last := lines[len(lines)-1]
-	want := `Next: ./takeout.sh run --archives "` + arch + `" --results "` + filepath.Join(dir, "results") + `" --default-tz Asia/Tokyo`
+	want := "Next: ./takeout.sh run --archives " + shellQuote(arch, runtime.GOOS) + " --results " + shellQuote(filepath.Join(dir, "results"), runtime.GOOS) + " --default-tz Asia/Tokyo"
 	if last != want {
 		t.Errorf("last line\n got %s\nwant %s", last, want)
 	}

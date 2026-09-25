@@ -7,7 +7,7 @@ The user has private photos in `archives/`. Treat that directory as read-only.
 Commands below are for macOS and Linux. On Windows, use PowerShell and replace `./takeout.sh` with `.\takeout.cmd` and `./takeout` with `.\takeout.exe`; paths look like `"D:\Takeout"`.
 
 1. Ask where the zips are and which IANA timezone to use as `--default-tz` before a full run. Do not guess a timezone from the machine.
-2. Run `./takeout.sh doctor`, then `./takeout.sh check --archives <dir>`. Both only read. `doctor` exit 2 prints a `Fix:` line; follow it.
+2. Run `./takeout.sh doctor`, then `./takeout.sh check --archives <dir>`. `check` only reads. `doctor` writes one probe file under `results/.takeout/doctor-*` and deletes it; it never touches `archives/`. `doctor` exit 2 prints a `Fix:` line; follow it.
 3. Start `./takeout.sh run --archives <dir> --default-tz <zone>` in the background. Poll `./takeout status` every 60 seconds. Do not stream the full log into the chat.
 4. Success is exit code 0 and `./takeout verify` exiting 0. Quote `media`, `library`, `unknown`, `live_pairs`, `placeholders`, and `tag_errors` from `results/.takeout/report.json`, plus `names_rule` and any `album_renames`. On Windows also quote `retries`.
 5. Exit 2: every message has a `Fix:` line and a `See: README.md#...` section. Fix the problem (missing zip, missing ExifTool, disk space) and run again.

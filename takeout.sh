@@ -8,17 +8,14 @@ case "$(uname -s)" in
   *) install_go="see https://go.dev/dl/"; install_exiftool="sudo apt install libimage-exiftool-perl (or your distribution's exiftool package)"; install_ffmpeg="sudo apt install ffmpeg" ;;
 esac
 
-missing=0
 if ! command -v go >/dev/null 2>&1; then
   echo "Go is required to build takeout. Install it with: $install_go" >&2
-  missing=1
-fi
-if ! command -v exiftool >/dev/null 2>&1; then
-  echo "ExifTool is required. Install it with: $install_exiftool" >&2
-  missing=1
-fi
-if [ "$missing" -ne 0 ]; then
   exit 2
+fi
+# ExifTool can also be passed with --exiftool; takeout itself reports a
+# missing one with the fix, so this is only a hint.
+if ! command -v exiftool >/dev/null 2>&1; then
+  echo "note: exiftool is not on PATH. Install it with: $install_exiftool" >&2
 fi
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "note: ffmpeg is optional. Without it, WebM and MKV videos go to results/not-importable/. Install with: $install_ffmpeg" >&2

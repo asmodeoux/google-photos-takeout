@@ -183,10 +183,10 @@ func nextLine(launcher string, c *cli) string {
 	var b strings.Builder
 	b.WriteString("Next: " + launcher + " run")
 	if c.archives != "archives" {
-		fmt.Fprintf(&b, ` --archives "%s"`, c.archives)
+		b.WriteString(" --archives " + shellQuote(c.archives, runtime.GOOS))
 	}
 	if c.results != "results" {
-		fmt.Fprintf(&b, ` --results "%s"`, c.results)
+		b.WriteString(" --results " + shellQuote(c.results, runtime.GOOS))
 	}
 	if c.tz != "" {
 		b.WriteString(" --default-tz " + c.tz)
@@ -200,6 +200,16 @@ func nextLine(launcher string, c *cli) string {
 // forceExitAfter is how long a second Ctrl+C waits for takeout to stop on its
 // own before the process exits.
 var forceExitAfter = 10 * time.Second
+
+// shellQuote quotes a path so the printed command can be pasted as is. Single
+// quotes keep $, backticks and spaces literal in PowerShell and in sh; a single
+// quote inside is doubled for PowerShell and closed-escaped-reopened for sh.
+func shellQuote(s, goos string) string {
+	if goos == "windows" {
+		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
 
 // interrupts cancels ctx on the first Ctrl+C, so files in flight finish, and
 // closes force on the second, which stops ExifTool and ffmpeg at once. If the

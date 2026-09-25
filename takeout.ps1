@@ -24,15 +24,14 @@ if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
     }
     $missing = $true
 }
+# ExifTool can also be passed with --exiftool or sit next to takeout.exe;
+# takeout reports a missing one with the fix, so this is only a hint.
 if (-not (Get-Command exiftool -ErrorAction SilentlyContinue)) {
     if (Test-InstalledElsewhere @("$env:ProgramFiles\ExifTool\exiftool.exe", "$winget\OliverBetz.ExifTool*\*\exiftool.exe")) {
-        Write-Host "ExifTool is installed but not on PATH in this window. Open a new PowerShell window and run the same command."
+        Write-Host "note: ExifTool is installed but not on PATH in this window. Open a new PowerShell window if takeout cannot find it."
     } else {
-        Write-Host "ExifTool is required. Install it with:"
-        Write-Host "  winget install --id OliverBetz.ExifTool -e"
-        Write-Host "then open a new PowerShell window."
+        Write-Host "note: exiftool is not on PATH. Install it with: winget install --id OliverBetz.ExifTool -e (then open a new PowerShell window)"
     }
-    $missing = $true
 }
 if ($missing) { exit 2 }
 if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {

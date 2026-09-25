@@ -508,7 +508,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	toTag := 0
 	for i := range groups {
 		g := &groups[i]
-		if needsTags(g) {
+		if rec, ok := journal.Get(g.id); needsTags(g) && !(ok && rec.Stage == "tagged") {
 			toTag++
 		}
 	}
@@ -1222,7 +1222,6 @@ func readEmbedded(clients []*exiftool.Client, opt Options, groups []group, rep *
 				g.when = w
 			}
 		}
-		_ = emb
 	}
 }
 
@@ -1969,7 +1968,7 @@ func tooBigForFAT(fsType string, groups []group) int {
 			continue
 		}
 		size := g.members[g.canon].Size
-		if strings.EqualFold(filepath.Ext(g.members[g.canon].Name), ".webm") || strings.EqualFold(filepath.Ext(g.members[g.canon].Name), ".mkv") {
+		if kindFromExt(g.members[g.canon].Name) == "webm" {
 			size += size / 2
 		}
 		if size > fatMax {
@@ -2240,7 +2239,7 @@ func summarizeDry(opt Options, idx *zipindex.Index, groups []group, rep *Report)
 		fs, _ = media.Stat(opt.Archives)
 	}
 	rep.Filesystem = fs.Type
-	fmt.Fprintf(opt.Stdout, "parts %d  missing %v  exports %v\n", len(idx.Zips), idx.Missing, idx.ExportIDs)
+	fmt.Fprintf(opt.Stdout, "parts %d  missing %v  exports %v\n", len(idx.Zips), idx.MissingByExport, idx.ExportIDs)
 	fmt.Fprintf(opt.Stdout, "filesystem %s  free %d GB  need about %d GB\n", fs.Type, fs.Free/1e9, estimate(groups, fs.APFS, opt.Albums)/1e9)
 }
 
@@ -2269,9 +2268,15 @@ func defenderHint(results string) string {
 		" from scanning makes runs faster. See README.md#antivirus"
 }
 
+// maxErrors bounds the errors list written to the report.
+const maxErrors = 200
+
 func writeReport(results string, rep Report) {
 	if results == "" {
 		return
+	}
+	if n := len(rep.Errors); n > maxErrors {
+		rep.Errors = append(rep.Errors[:maxErrors:maxErrors], fmt.Sprintf("... and %d more", n-maxErrors))
 	}
 	dir := filepath.Join(results, ".takeout")
 	_ = os.MkdirAll(dir, 0o755)
