@@ -130,18 +130,58 @@ func Args(p Plan) ([]string, error) {
 			}
 		}
 	}
-	if p.SetContentID != "" {
+	if id := cleanValue(p.SetContentID); id != "" {
 		if videoKind(p.Kind) {
-			a = append(a, "-Keys:ContentIdentifier="+p.SetContentID)
+			a = append(a, "-Keys:ContentIdentifier="+id)
 		} else {
-			a = append(a, "-Apple:ContentIdentifier="+p.SetContentID)
+			a = append(a, "-Apple:ContentIdentifier="+id)
 		}
 	}
-	if p.Description != "" && p.Kind != "gif" {
-		a = append(a, "-ImageDescription="+p.Description, "-XMP:Description="+p.Description)
+	if d := cleanValue(p.Description); d != "" && p.Kind != "gif" {
+		a = append(a, "-ImageDescription="+d, "-XMP:Description="+d)
 	}
 	a = append(a, abs)
+	if err := CheckArgs(a); err != nil {
+		return nil, err
+	}
 	return a, nil
+}
+
+// cleanValue turns line breaks and other control characters into single spaces.
+// Each stay_open argument is one line, so a line break would start a new argument.
+func cleanValue(s string) string {
+	var b strings.Builder
+	broke := false // inside a run of control characters and the spaces around it
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			broke = true
+			continue
+		}
+		if broke {
+			if r == ' ' {
+				continue
+			}
+			out := strings.TrimRight(b.String(), " ")
+			b.Reset()
+			b.WriteString(out)
+			if out != "" {
+				b.WriteByte(' ')
+			}
+			broke = false
+		}
+		b.WriteRune(r)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+// CheckArgs refuses any argument that would split into two stay_open lines.
+func CheckArgs(args []string) error {
+	for _, a := range args {
+		if strings.ContainsAny(a, "\r\n") {
+			return fmt.Errorf("unsafe exiftool argument %q contains a line break", a)
+		}
+	}
+	return nil
 }
 
 func videoKind(k string) bool { return k == "mp4" || k == "mov" }

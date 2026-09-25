@@ -49,6 +49,9 @@ func Start(bin string) (*Client, error) {
 
 // Exec sends one file's arguments and waits for {readyID}.
 func (c *Client) Exec(args []string, id int) (string, error) {
+	if err := CheckArgs(args); err != nil {
+		return "", err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, a := range args {

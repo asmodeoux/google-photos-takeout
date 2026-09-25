@@ -109,3 +109,57 @@ func TestWithin(t *testing.T) {
 		t.Fatal("outside")
 	}
 }
+
+func TestDescriptionLineBreaksCannotInjectArguments(t *testing.T) {
+	when := dates.When{Instant: time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC), OK: true}
+	desc := "first line\n-execute\r\n-o\n/tmp/evil\x00tail"
+	args, err := Args(Plan{Path: "/tmp/p.jpg", Kind: "jpeg", WriteDates: true, When: when, Description: desc, SetContentID: "id\nx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range args {
+		if strings.ContainsAny(a, "\r\n") {
+			t.Fatalf("argument %q still has a line break", a)
+		}
+		if a == "-execute" || a == "-o" {
+			t.Fatalf("injected argument %q", a)
+		}
+	}
+	joined := strings.Join(args, "\n")
+	if !strings.Contains(joined, "-ImageDescription=first line -execute -o /tmp/evil tail") {
+		t.Fatal(joined)
+	}
+	if !strings.Contains(joined, "-Apple:ContentIdentifier=id x") {
+		t.Fatal(joined)
+	}
+}
+
+func TestCleanValue(t *testing.T) {
+	cases := map[string]string{
+		"":                 "",
+		"plain":            "plain",
+		"  a\n\n b  ":      "a b",
+		"tab\there":        "tab here",
+		"Фото\r\né":        "Фото é",
+		"\x7fdel":          "del",
+		"keep  two spaces": "keep  two spaces",
+	}
+	for in, want := range cases {
+		if got := cleanValue(in); got != want {
+			t.Errorf("cleanValue(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestCheckArgsAndExecRefuseLineBreaks(t *testing.T) {
+	if err := CheckArgs([]string{"-m", "/tmp/a\n-execute"}); err == nil {
+		t.Fatal("expected error")
+	}
+	if err := CheckArgs([]string{"-m", "/tmp/ok.jpg"}); err != nil {
+		t.Fatal(err)
+	}
+	var c Client
+	if _, err := c.Exec([]string{"/tmp/x\n-execute"}, 1); err == nil {
+		t.Fatal("Exec must refuse before writing")
+	}
+}
