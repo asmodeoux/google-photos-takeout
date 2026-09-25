@@ -2317,7 +2317,11 @@ func summarizeDry(opt Options, idx *zipindex.Index, groups []group, rep *Report)
 		fs, _ = media.Stat(opt.Archives)
 	}
 	rep.Filesystem = fs.Type
-	fmt.Fprintf(opt.Stdout, "parts %d  missing %v  exports %v\n", len(idx.Zips), idx.MissingByExport, idx.ExportIDs)
+	missing := "none"
+	if len(idx.MissingByExport) > 0 {
+		missing = fmt.Sprint(idx.MissingByExport)
+	}
+	fmt.Fprintf(opt.Stdout, "parts %d  missing %s  exports %v\n", len(idx.Zips), missing, idx.ExportIDs)
 	fmt.Fprintf(opt.Stdout, "filesystem %s  free %d GB  need about %d GB\n", fs.Type, fs.Free/1e9, estimate(groups, fs.APFS, opt.Albums)/1e9)
 }
 
@@ -2597,14 +2601,17 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	// Every file a finished record names, in the library and in albums, must
 	// be on disk. Records of unfinished moves are not checked.
 	var missing []string
+	checked, albumsChecked := 0, 0
 	for _, rec := range recs {
 		if rec.Stage != "placed" && rec.Stage != "cloned" {
 			continue
 		}
 		paths := []string{rec.Path}
+		checked++
 		if rec.Stage == "cloned" {
 			// Album copies are finished only once the record says cloned.
 			paths = append(paths, rec.Albums...)
+			albumsChecked += len(rec.Albums)
 		}
 		for _, p := range paths {
 			if p == "" {
@@ -2651,6 +2658,10 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 		return ExitReconcile, rep, fmt.Errorf("%d files are in the wrong year folder, for example: %s", len(bad), strings.Join(bad[:n], "; "))
 	}
 	_ = ctx
+	if opt.Stdout != nil {
+		fmt.Fprintf(opt.Stdout, "verify: %d library files and %d album copies are on disk; year folders match their dates; %d tag errors, %d failed\n",
+			checked, albumsChecked, rep.TagErrors, rep.Failed)
+	}
 	// Files with tag errors are in the library; the year check above still ran.
 	if rep.TagErrors > 0 {
 		return ExitTagErrors, rep, nil

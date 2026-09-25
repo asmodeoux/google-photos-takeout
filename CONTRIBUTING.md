@@ -11,7 +11,7 @@ go test ./...
 scripts/smoke.sh          # scripts\smoke.ps1 on Windows
 ```
 
-`TAKEOUT_REQUIRE_TOOLS=1` makes tests fail instead of skip when ExifTool or ffmpeg is missing, as CI does.
+`scripts/test.sh` runs every test, lists the ones that skipped and why, and fails on a skip not named on its command line; CI names the expected skips per OS. `TAKEOUT_REQUIRE_TOOLS=1` makes tests fail instead of skip when ExifTool or ffmpeg is missing, as CI does.
 
 ## Changes
 

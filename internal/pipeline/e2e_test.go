@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -145,9 +144,7 @@ func tinyPNG() []byte {
 }
 
 func TestNewYearFolderUsesCaptureTimezone(t *testing.T) {
-	if _, err := exec.LookPath("exiftool"); err != nil {
-		t.Skip("exiftool not installed")
-	}
+	requireTools(t, "exiftool")
 	dir := t.TempDir()
 	arch := filepath.Join(dir, "archives")
 	out := filepath.Join(dir, "results")

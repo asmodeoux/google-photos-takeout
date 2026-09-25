@@ -57,7 +57,15 @@ jobs:
         shell: bash
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
-      - run: go test ./...
+      # Every test must run; only these may skip, for the reason each prints.
+      - name: go test (fails on an unexpected skip)
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) scripts/test.sh TestPathKeyUnixKeepsBackslashAndCase TestCorpusAppleNames TestAlbumCopyFailureIsNotSuccess TestYearFoldersMatchDates ;;
+            macOS) scripts/test.sh TestImportPhotosOffMacOSExplains TestYearFoldersMatchDates ;;
+            *) scripts/test.sh TestYearFoldersMatchDates ;;
+          esac
       - name: go test -race
         if: runner.os != 'Windows'
         run: go test -race ./...
