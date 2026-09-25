@@ -43,6 +43,8 @@ You need **ExifTool** (writes the tags) and, to build from source, **Go**. **ffm
 
 #### macOS
 
+Prebuilt binaries for macOS and Linux are on the [latest release](https://github.com/asmodeoux/google-photos-takeout/releases/latest); with one you need only ExifTool. To build from source:
+
 ```sh
 brew install go exiftool ffmpeg
 git clone https://github.com/asmodeoux/google-photos-takeout.git
@@ -71,7 +73,7 @@ winget install --id Gyan.FFmpeg -e
 <details>
 <summary>Prebuilt takeout.exe without installing Go</summary>
 
-Every green CI run on `main` builds `takeout.exe`. On GitHub, open **Actions**, pick the latest green run on `main`, and download **takeout-windows-amd64** (or `-arm64`) under **Artifacts**. Only runs on `main` publish `takeout-*` artifacts; `test-build-*` ones come from pull requests and are not for use. You need to be signed in to GitHub, and artifacts expire after 30 days. There is no signed release yet, so:
+Download `takeout-<version>-windows-amd64.zip` (or `-arm64` for ARM PCs) from the [latest release](https://github.com/asmodeoux/google-photos-takeout/releases/latest). `SHA256SUMS.txt` next to it lets you check the download with `Get-FileHash`. The binaries are not code-signed yet, so:
 
 - Extract the zip, then run `Unblock-File .\takeout.exe` in that folder.
 - If SmartScreen says "Windows protected your PC", choose **More info**, then **Run anyway**. <a id="smartscreen"></a>
