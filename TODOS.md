@@ -13,3 +13,21 @@ Deferred from the Windows support plan, and known limitations.
 - **Faster duplicate confirmation.** Files that share size and CRC32 are hashed one at a time before extraction; a large export with many album copies spends a while there with no progress line. Hash in parallel and reuse the hash when extracting.
 - **Pin ffmpeg in CI.** Windows CI installs the current ffmpeg from Chocolatey without a checksum. It is only used by tests, not shipped.
 - **Dates before 1990 in file names and camera clocks** are rejected as likely wrong. Sidecar dates are accepted back to 1800.
+
+## Test coverage to add
+
+Scenarios the synthetic Takeout and CI do not cover yet.
+
+- **Google placeholder images.** No corpus row has one; the report always says `placeholders 0`.
+- **`--exclude-screenshots` and `--include-trash` end to end.** Only the helper functions are tested.
+- **Paths over 260 characters on Windows.** No corpus row sends a file with a long full path through ExifTool on Windows.
+- **Zip entries with non-UTF-8 (CP437) names,** as older zip tools write them.
+- **Localized "edited" suffixes** (`-bearbeitet`, `-modifié`, `-編集済み`): matched in code, but the corpus has only `-edited`.
+- **Two different exports mixed in one archives folder, end to end.** Only the zip index unit test covers it.
+- **Other files in the Google Photos folder** (`.txt`, `.pdf`): how they are placed and reported.
+- **Launcher argument passing:** `takeout.cmd`, `takeout.ps1` and `takeout.sh` with paths that contain spaces, quotes, `&` and `%`; CI runs only `version` through them.
+- **`--sample` end to end,** and videos dated before 1970.
+- **exFAT and FAT32 results disks in CI:** create and format a virtual disk in the Windows job and run the corpus onto it.
+- **Windows on ARM:** run the tests and the `windows-arm64` binary on a Windows ARM runner.
+- **Double-clicking `takeout.exe`:** the pause message needs a desktop session; check it by hand.
+
