@@ -2,14 +2,20 @@ package exiftool
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/asmodeoux/google-photos-takeout/internal/proc"
 )
 
 // maxStderr caps the stderr text kept for one command.
@@ -23,6 +29,7 @@ type Client struct {
 	errs chan string // stderr lines, closed when stderr ends
 	mu   sync.Mutex
 	path string
+	dead atomic.Bool // set by Kill; Close must not wait on a stuck command
 }
 
 // Reply is what one -execute block printed.
@@ -33,13 +40,12 @@ type Reply struct {
 
 // Start launches exiftool -stay_open.
 func Start(bin string) (*Client, error) {
-	if bin == "" {
-		bin = "exiftool"
+	path, err := Look(bin)
+	if err != nil {
+		return nil, err
 	}
-	if _, err := exec.LookPath(bin); err != nil {
-		return nil, fmt.Errorf("exiftool not found. Install it with: brew install exiftool")
-	}
-	cmd := exec.Command(bin, "-stay_open", "True", "-@", "-", "-common_args", "-charset", "filename=utf8")
+	cmd := exec.Command(path, "-stay_open", "True", "-@", "-", "-common_args", "-charset", "filename=utf8")
+	proc.Isolate(cmd)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -57,7 +63,7 @@ func Start(bin string) (*Client, error) {
 	}
 	c := newClient(stdin, stdout, stderr)
 	c.cmd = cmd
-	c.path = bin
+	c.path = path
 	return c, nil
 }
 
@@ -130,9 +136,21 @@ func (c *Client) Run(args []string, id int) (Reply, error) {
 	return r, fmt.Errorf("exiftool: stderr closed before %s", done)
 }
 
+// Kill stops the process at once. A command in flight returns an error.
+func (c *Client) Kill() {
+	if c == nil {
+		return
+	}
+	c.dead.Store(true)
+	proc.Kill(c.cmd)
+	if c.in != nil {
+		_ = c.in.Close()
+	}
+}
+
 // Close ends the stay_open process.
 func (c *Client) Close() {
-	if c == nil || c.in == nil {
+	if c == nil || c.in == nil || c.dead.Load() {
 		return
 	}
 	c.mu.Lock()
@@ -144,17 +162,84 @@ func (c *Client) Close() {
 	}
 }
 
-// Look returns the exiftool path or an error with the install hint.
+// MinWindowsVersion is the first ExifTool that reads and writes long and
+// non-ASCII paths on Windows by default (WindowsLongPath with wide characters).
+const MinWindowsVersion = "13.07"
+
+// Look finds ExifTool: the --exiftool value, then PATH, then a copy next to
+// the takeout program. On Windows the copy next to takeout counts only when
+// its exiftool_files folder sits beside it, as in the official download, so a
+// stray exiftool.exe in Downloads is not picked up.
 func Look(bin string) (string, error) {
-	if bin == "" {
-		bin = "exiftool"
-	}
-	p, err := exec.LookPath(bin)
-	if err != nil {
-		return "", fmt.Errorf("exiftool not found. Install it with: brew install exiftool")
-	}
-	return p, nil
+	return look(bin, runtime.GOOS)
 }
+
+func look(bin, goos string) (string, error) {
+	if bin != "" {
+		if err := checkNotKeypress(bin); err != nil {
+			return "", err
+		}
+		p, err := exec.LookPath(bin)
+		if err != nil {
+			return "", fmt.Errorf("exiftool not found at %s. %s", bin, InstallHint(goos))
+		}
+		return p, nil
+	}
+	if p, err := exec.LookPath("exiftool"); err == nil {
+		return p, nil
+	}
+	if exe, err := os.Executable(); err == nil {
+		dir := filepath.Dir(exe)
+		name := "exiftool"
+		if goos == "windows" {
+			name = "exiftool.exe"
+		}
+		cand := filepath.Join(dir, name)
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			if goos != "windows" {
+				return cand, nil
+			}
+			if st, err := os.Stat(filepath.Join(dir, "exiftool_files")); err == nil && st.IsDir() {
+				return cand, nil
+			}
+		}
+		if goos == "windows" {
+			if _, err := os.Stat(filepath.Join(dir, "exiftool(-k).exe")); err == nil {
+				return "", keypressError(filepath.Join(dir, "exiftool(-k).exe"))
+			}
+		}
+	}
+	return "", fmt.Errorf("exiftool not found. %s", InstallHint(goos))
+}
+
+// checkNotKeypress refuses the "exiftool(-k).exe" build from the Windows zip,
+// which waits for a key press after every command and would hang takeout.
+func checkNotKeypress(p string) error {
+	if strings.Contains(strings.ToLower(filepath.Base(p)), "(-k)") {
+		return keypressError(p)
+	}
+	return nil
+}
+
+func keypressError(p string) error {
+	return fmt.Errorf("%s waits for a key press and cannot run in batch mode. Rename it to exiftool.exe and keep the exiftool_files folder next to it", p)
+}
+
+// InstallHint is the install command for the current kind of system.
+func InstallHint(goos string) string {
+	switch goos {
+	case "windows":
+		return "Install it with: winget install --id OliverBetz.ExifTool -e (then open a new PowerShell window), or download the Windows zip from exiftool.org and rename exiftool(-k).exe to exiftool.exe"
+	case "darwin":
+		return "Install it with: brew install exiftool"
+	default:
+		return "Install it with: sudo apt install libimage-exiftool-perl (or your distribution's exiftool package)"
+	}
+}
+
+// versionTimeout allows for a cold start while antivirus scans ExifTool's
+// bundled Perl on Windows.
+var versionTimeout = 45 * time.Second
 
 // Version runs exiftool -ver.
 func Version(bin string) (string, error) {
@@ -162,11 +247,35 @@ func Version(bin string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := exec.Command(p, "-ver").Output()
+	ctx, cancel := context.WithTimeout(context.Background(), versionTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, p, "-ver")
+	proc.Isolate(cmd)
+	out, err := cmd.Output()
+	if ctx.Err() != nil {
+		return "", fmt.Errorf("exiftool at %s did not answer within %s", p, versionTimeout)
+	}
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("exiftool at %s: %w", p, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// AtLeast compares ExifTool versions such as "13.07" and "9.5" as numbers.
+func AtLeast(have, want string) bool {
+	hm, hn := splitVersion(have)
+	wm, wn := splitVersion(want)
+	if hm != wm {
+		return hm > wm
+	}
+	return hn >= wn
+}
+
+func splitVersion(v string) (int, int) {
+	major, minor, _ := strings.Cut(strings.TrimSpace(v), ".")
+	a, _ := strconv.Atoi(major)
+	b, _ := strconv.Atoi(minor)
+	return a, b
 }
 
 // Within reports whether path is inside root. Used to refuse writes outside results/.

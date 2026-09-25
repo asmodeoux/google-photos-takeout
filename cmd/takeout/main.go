@@ -7,14 +7,15 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"syscall"
 
 	"github.com/asmodeoux/google-photos-takeout/internal/photos"
 	"github.com/asmodeoux/google-photos-takeout/internal/pipeline"
+	"github.com/asmodeoux/google-photos-takeout/internal/proc"
 	"github.com/asmodeoux/google-photos-takeout/internal/version"
 )
 
 func main() {
+	proc.KillTreeOnExit()
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(pipeline.ExitPreflight)
@@ -63,13 +64,13 @@ func run(cmd string, args []string) int {
 	if cmd == "check" {
 		*dry = true
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, force, stop := interrupts()
 	defer stop()
 	opt := pipeline.Options{
 		Archives: *archives, Results: *results, DefaultTZ: *tz, Sample: *sample,
 		DryRun: *dry, KeepUnzipped: *keep, UnzipOnly: cmd == "unzip",
 		Albums: *albums, IncludeTrash: *trash, ExcludeScreenshots: *shots, Quiet: *quiet, Progress: *progress,
-		Exiftool: *exif, FFmpeg: *ff, Names: *namesRule, Stdout: os.Stdout,
+		Exiftool: *exif, FFmpeg: *ff, Names: *namesRule, Force: force, Stdout: os.Stdout,
 	}
 	if cmd == "import-photos" {
 		return importPhotos(*library, *results, *confirm)
@@ -91,6 +92,29 @@ func run(cmd string, args []string) int {
 		return pipeline.ExitInterrupt
 	}
 	return code
+}
+
+// interrupts cancels ctx on the first Ctrl+C, so files in flight finish, and
+// closes force on the second, which stops ExifTool and ffmpeg at once.
+func interrupts() (context.Context, <-chan struct{}, func()) {
+	ctx, cancel := context.WithCancel(context.Background())
+	force := make(chan struct{})
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, stopSignals...)
+	go func() {
+		n := 0
+		for range sig {
+			n++
+			switch n {
+			case 1:
+				fmt.Fprintln(os.Stderr, "stopping after the files in flight. Press Ctrl+C again to stop now.")
+				cancel()
+			case 2:
+				close(force)
+			}
+		}
+	}()
+	return ctx, force, func() { signal.Stop(sig); cancel() }
 }
 
 func importPhotos(library, results string, confirm bool) int {

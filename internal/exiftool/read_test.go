@@ -209,3 +209,30 @@ var tinyJPEG = []byte{
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0xff, 0xda, 0x00, 0x08, 0x01, 0x01, 0x00, 0x00, 0x3f, 0x00, 0x2a, 0x9f, 0xff, 0xd9,
 }
+
+func TestAtLeast(t *testing.T) {
+	cases := []struct {
+		have, want string
+		ok         bool
+	}{
+		{"13.07", "13.07", true}, {"13.25", "13.07", true}, {"13.06", "13.07", false},
+		{"12.99", "13.07", false}, {"9.5", "13.07", false}, {"14.00", "13.07", true},
+		{" 13.10\n", "13.07", true},
+	}
+	for _, c := range cases {
+		if AtLeast(c.have, c.want) != c.ok {
+			t.Errorf("AtLeast(%q, %q) != %v", c.have, c.want, c.ok)
+		}
+	}
+}
+
+func TestLookRejectsKeypressBuild(t *testing.T) {
+	_, err := look(`C:\Downloads\exiftool(-k).exe`, "windows")
+	if err == nil || !strings.Contains(err.Error(), "Rename it to exiftool.exe") {
+		t.Fatalf("err %v", err)
+	}
+	_, err = look(filepath.Join(t.TempDir(), "nope"), "windows")
+	if err == nil || !strings.Contains(err.Error(), "winget install") {
+		t.Fatalf("err %v", err)
+	}
+}

@@ -30,7 +30,7 @@ func TestTimeLogCountsFailures(t *testing.T) {
 	var l timeLog
 	l.set(filepath.Join(t.TempDir(), "missing.jpg"), timeNowForTest())
 	if l.count != 1 || len(l.paths) != 1 {
-		t.Fatalf("%+v", l)
+		t.Fatalf("count %d paths %v", l.count, l.paths)
 	}
 }
 

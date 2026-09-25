@@ -29,6 +29,7 @@ import (
 	"github.com/asmodeoux/google-photos-takeout/internal/match"
 	"github.com/asmodeoux/google-photos-takeout/internal/media"
 	"github.com/asmodeoux/google-photos-takeout/internal/names"
+	"github.com/asmodeoux/google-photos-takeout/internal/proc"
 	"github.com/asmodeoux/google-photos-takeout/internal/progress"
 	"github.com/asmodeoux/google-photos-takeout/internal/state"
 	"github.com/asmodeoux/google-photos-takeout/internal/zipindex"
@@ -60,8 +61,11 @@ type Options struct {
 	FFmpeg             string
 	FailAfter          int
 	Names              string // auto, apple, portable
-	Stdout             io.Writer
-	Now                time.Time
+	// Force is closed on a second Ctrl+C: stop ExifTool and ffmpeg at once
+	// instead of letting the files in flight finish.
+	Force  <-chan struct{}
+	Stdout io.Writer
+	Now    time.Time
 }
 
 // Report is takeout-report.json.
@@ -89,6 +93,7 @@ type Report struct {
 	PlaceholderURL []string       `json:"placeholder_urls,omitempty"`
 	Errors         []string       `json:"errors,omitempty"`
 	Filesystem     string         `json:"filesystem"`
+	ExiftoolVer    string         `json:"exiftool_version,omitempty"`
 	BirthTimeErrs  int            `json:"birth_time_errors,omitempty"`
 	BirthTimeList  []string       `json:"birth_time_error_files,omitempty"`
 	ExportIDs      []string       `json:"export_ids,omitempty"`
@@ -173,8 +178,15 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		}
 		return ExitPreflight, rep, fmt.Errorf("%s. Re-download those parts before running", strings.Join(parts, "; "))
 	}
-	if _, err := exiftool.Look(opt.Exiftool); err != nil && !opt.UnzipOnly {
-		return ExitPreflight, rep, err
+	if !opt.UnzipOnly {
+		v, err := exiftool.Version(opt.Exiftool)
+		if err != nil {
+			return ExitPreflight, rep, err
+		}
+		if runtime.GOOS == "windows" && !exiftool.AtLeast(v, exiftool.MinWindowsVersion) {
+			return ExitPreflight, rep, fmt.Errorf("ExifTool %s is too old for Windows paths (need %s or newer). Upgrade with: winget upgrade --id OliverBetz.ExifTool -e", v, exiftool.MinWindowsVersion)
+		}
+		rep.ExiftoolVer = v
 	}
 
 	if opt.UnzipOnly || opt.KeepUnzipped {
@@ -350,7 +362,10 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 	for i := range groups {
 		if groups[i].trueType == "webm" && groups[i].staged != "" {
-			if err := transcodeOrKeep(opt, &groups[i]); err != nil {
+			if err := transcodeOrKeep(ctx, opt, &groups[i]); err != nil {
+				if ctx.Err() != nil {
+					return ExitInterrupt, rep, nil
+				}
 				rep.Errors = append(rep.Errors, err.Error())
 				groups[i].tagErr = err.Error()
 			}
@@ -375,52 +390,15 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 
 	times := &timeLog{}
 	pr.Phase("tags")
-	jobs := make(chan int)
-	var wg sync.WaitGroup
-	var repMu sync.Mutex
-	var tagged int
-	for _, c := range clients {
-		wg.Add(1)
-		go func(c *exiftool.Client) {
-			defer wg.Done()
-			for i := range jobs {
-				g := &groups[i]
-				if err := writeTags(c, opt.Results, g, i, times); err != nil {
-					g.tagErr = err.Error()
-					repMu.Lock()
-					rep.TagErrors++
-					if len(rep.Errors) < 40 {
-						rep.Errors = append(rep.Errors, g.members[g.canon].Name+": "+err.Error())
-					}
-					repMu.Unlock()
-				} else if rec, ok := journal.Get(g.id); !ok || (rec.Stage != "placed" && rec.Stage != "cloned") {
-					_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "tagged"})
-				}
-				repMu.Lock()
-				tagged++
-				n := tagged
-				repMu.Unlock()
-				pr.Tick(n, len(groups), g.members[g.canon].Name)
-			}
-		}(c)
+	runners := make([]tagRunner, len(clients))
+	for i, c := range clients {
+		runners[i] = c
 	}
-	stopped := false
-	for i := range groups {
-		if ctx.Err() != nil {
-			stopped = true
-			break
+	stopped := tagAll(ctx, opt.Force, tagGrace, runners, func() {
+		for _, c := range clients {
+			c.Kill()
 		}
-		g := &groups[i]
-		if g.skip || g.placeholder || g.staged == "" || g.trueType == "webm" {
-			continue
-		}
-		if rec, ok := journal.Get(g.id); ok && rec.Stage == "tagged" {
-			continue
-		}
-		jobs <- i
-	}
-	close(jobs)
-	wg.Wait()
+	}, groups, opt.Results, journal, &rep, times, pr)
 	if stopped {
 		return ExitInterrupt, rep, nil
 	}
@@ -902,7 +880,7 @@ func kindFromExt(p string) string {
 func cleanPartial(dir string) {
 	ents, _ := os.ReadDir(dir)
 	for _, e := range ents {
-		if strings.HasSuffix(e.Name(), ".partial") {
+		if strings.HasSuffix(e.Name(), ".partial") || strings.HasSuffix(e.Name(), "_exiftool_tmp") {
 			_ = os.Remove(filepath.Join(dir, e.Name()))
 		}
 	}
@@ -1227,6 +1205,85 @@ func (l *timeLog) set(p string, t time.Time) {
 	}
 }
 
+// tagGrace is how long an interrupted run waits for files in flight before
+// stopping ExifTool.
+var tagGrace = 30 * time.Second
+
+// tagAll writes tags with one worker per runner. On cancel it stops feeding
+// work, lets writes in flight finish for up to grace, then calls kill. A write
+// that succeeds after cancel is journaled; one that fails is not counted, so
+// the next run redoes it. It reports whether the run was stopped.
+func tagAll(ctx context.Context, force <-chan struct{}, grace time.Duration, runners []tagRunner, kill func(),
+	groups []group, results string, journal *state.Journal, rep *Report, times *timeLog, pr *progress.Reporter) bool {
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	var repMu sync.Mutex
+	var tagged int
+	for _, c := range runners {
+		wg.Add(1)
+		go func(c tagRunner) {
+			defer wg.Done()
+			for i := range jobs {
+				g := &groups[i]
+				err := writeTags(c, results, g, i, times)
+				switch {
+				case err != nil && ctx.Err() != nil:
+					// Interrupted mid-write: leave it for the next run.
+				case err != nil:
+					g.tagErr = err.Error()
+					repMu.Lock()
+					rep.TagErrors++
+					if len(rep.Errors) < 40 {
+						rep.Errors = append(rep.Errors, g.members[g.canon].Name+": "+err.Error())
+					}
+					repMu.Unlock()
+				default:
+					if rec, ok := journal.Get(g.id); !ok || (rec.Stage != "placed" && rec.Stage != "cloned") {
+						_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "tagged"})
+					}
+				}
+				repMu.Lock()
+				tagged++
+				n := tagged
+				repMu.Unlock()
+				if pr != nil {
+					pr.Tick(n, len(groups), g.members[g.canon].Name)
+				}
+			}
+		}(c)
+	}
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+feed:
+	for i := range groups {
+		g := &groups[i]
+		if g.skip || g.placeholder || g.staged == "" || g.trueType == "webm" {
+			continue
+		}
+		if rec, ok := journal.Get(g.id); ok && rec.Stage == "tagged" {
+			continue
+		}
+		select {
+		case jobs <- i:
+		case <-ctx.Done():
+			break feed
+		}
+	}
+	close(jobs)
+	if ctx.Err() == nil {
+		<-done
+		return false
+	}
+	select {
+	case <-done:
+	case <-time.After(grace):
+		kill()
+	case <-force:
+		kill()
+	}
+	return true
+}
+
 // tagRunner is the part of an ExifTool client that writeTags needs.
 type tagRunner interface {
 	Run(args []string, id int) (exiftool.Reply, error)
@@ -1497,7 +1554,7 @@ func linkAlbum(mode, src, dst string) error {
 	return media.Clone(src, dst)
 }
 
-func transcodeOrKeep(opt Options, g *group) error {
+func transcodeOrKeep(ctx context.Context, opt Options, g *group) error {
 	if !ffmpegOK(opt.FFmpeg) {
 		return nil
 	}
@@ -1505,11 +1562,18 @@ func transcodeOrKeep(opt Options, g *group) error {
 	if bin == "" {
 		bin = "ffmpeg"
 	}
+	// The staged name is a short content hash, so paths stay short on Windows.
 	dest := strings.TrimSuffix(g.staged, filepath.Ext(g.staged)) + ".mov"
-	cmd := exec.Command(bin, "-y", "-i", g.staged, "-map", "0:v:0", "-map", "0:a?",
+	cmd := exec.CommandContext(ctx, bin, "-nostdin", "-y", "-i", g.staged, "-map", "0:v:0", "-map", "0:a?",
 		"-c:v", "libx264", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k",
 		"-movflags", "+faststart", dest)
+	proc.Isolate(cmd)
+	cmd.Cancel = func() error { proc.Kill(cmd); return nil }
 	if out, err := cmd.CombinedOutput(); err != nil {
+		_ = os.Remove(dest)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("ffmpeg: %v %s", err, out)
 	}
 	_ = os.Remove(g.staged)
