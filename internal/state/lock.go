@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"time"
@@ -20,34 +19,34 @@ type lockInfo struct {
 // ErrLocked means another takeout run is using the results folder.
 var ErrLocked = errors.New("results folder is in use")
 
-// Lock claims dir for one run by creating dir/lock exclusively. A lock left by a
-// process that is no longer running on this host is replaced. The returned
-// release removes the lock.
+// Lock claims dir for one run with an operating-system lock on dir/lock
+// (flock, or LockFileEx on Windows). The system drops the lock when the
+// process ends, however it ends, so a crash never leaves the folder locked.
+// The file itself stays; it only says who holds the lock.
 func Lock(dir string) (release func(), err error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
 	p := filepath.Join(dir, "lock")
-	host, _ := os.Hostname()
-	me := lockInfo{PID: os.Getpid(), Host: host, Started: time.Now().UTC()}
-	for attempt := 0; attempt < 2; attempt++ {
-		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
-		if err == nil {
-			_ = json.NewEncoder(f).Encode(me)
-			f.Close()
-			return func() { _ = os.Remove(p) }, nil
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			return nil, err
-		}
+	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	if err := lockFile(f); err != nil {
+		f.Close()
 		var other lockInfo
 		b, _ := os.ReadFile(p)
-		_ = json.Unmarshal(b, &other)
-		if other.Host == host && other.PID > 0 && !processAlive(other.PID) {
-			_ = os.Remove(p)
-			continue
+		if json.Unmarshal(b, &other) != nil || other.PID == 0 {
+			return nil, fmt.Errorf("%w: another takeout holds %s", ErrLocked, p)
 		}
-		return nil, fmt.Errorf("%w by process %d on %s since %s (%s). If no other takeout is running, delete that file", ErrLocked, other.PID, other.Host, other.Started.Format(time.RFC3339), p)
+		return nil, fmt.Errorf("%w by process %d on %s since %s", ErrLocked, other.PID, other.Host, other.Started.Format(time.RFC3339))
 	}
-	return nil, fmt.Errorf("%w: could not replace a stale lock at %s", ErrLocked, p)
+	host, _ := os.Hostname()
+	b, _ := json.Marshal(lockInfo{PID: os.Getpid(), Host: host, Started: time.Now().UTC()})
+	_ = f.Truncate(0)
+	_, _ = f.WriteAt(append(b, '\n'), 0)
+	return func() {
+		unlockFile(f)
+		f.Close()
+	}, nil
 }

@@ -287,7 +287,7 @@ With a prebuilt binary use `.\takeout.exe` or `./takeout`. `takeout <command> -h
 **The --names choice does not fit this disk.** `apple` names keep characters that NTFS and exFAT refuse. Use `--names auto`.
 
 <a id="in-use"></a>
-**Another takeout is using the results folder.** Wait for the other run to finish. If none is running (for example after a crash), the message names the lock file to delete.
+**Another takeout is using the results folder.** Wait for the other run to finish, or close it. The lock ends with the process, so a crashed run never leaves the folder locked.
 
 <a id="paths"></a>
 **Folder name with a line break.** Rename the folder or choose another one.

@@ -14,7 +14,10 @@ import (
 func renameNoReplace(src, dst string) error {
 	err := os.Link(src, dst)
 	if err == nil {
-		return os.Remove(src)
+		// dst is in place. A src that cannot be removed is only a leftover;
+		// reporting failure here would make the caller move the file again.
+		_ = os.Remove(src)
+		return nil
 	}
 	if errors.Is(err, fs.ErrExist) {
 		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: fs.ErrExist}
