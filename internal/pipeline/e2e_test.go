@@ -68,7 +68,7 @@ func TestE2EAndResume(t *testing.T) {
 	if verr != nil && vcode == ExitReconcile {
 		t.Fatal(verr)
 	}
-	bad, err := YearMismatches(out)
+	bad, err := yearMismatchesForTest(t, out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestNewYearFolderUsesCaptureTimezone(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(out, "2018", "west.jpg")); err == nil {
 		t.Fatal("west photo was filed by UTC year")
 	}
-	bad, err := YearMismatches(out)
+	bad, err := yearMismatchesForTest(t, out)
 	if err != nil {
 		t.Fatal(err)
 	}

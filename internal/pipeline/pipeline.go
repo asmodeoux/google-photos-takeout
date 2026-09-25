@@ -314,7 +314,14 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		}
 	}
 
-	readEmbedded(opt, groups)
+	const tagWorkers = 4
+	clients, err := startClients(opt.Exiftool, tagWorkers)
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	defer closeClients(clients)
+
+	readEmbedded(clients, opt, groups, &rep)
 	resolveDates(groups, opt)
 	pairLive(groups, &rep)
 	ws := whens(groups)
@@ -322,24 +329,6 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	for i := range groups {
 		groups[i].when = ws[i]
 	}
-
-	const tagWorkers = 4
-	clients := make([]*exiftool.Client, 0, tagWorkers)
-	for n := 0; n < tagWorkers; n++ {
-		c, err := exiftool.Start(opt.Exiftool)
-		if err != nil {
-			for _, cl := range clients {
-				cl.Close()
-			}
-			return ExitPreflight, rep, err
-		}
-		clients = append(clients, c)
-	}
-	defer func() {
-		for _, c := range clients {
-			c.Close()
-		}
-	}()
 
 	pr.Phase("tags")
 	jobs := make(chan int)
@@ -391,7 +380,6 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if stopped {
 		return ExitInterrupt, rep, nil
 	}
-	client := clients[0]
 
 	pr.Phase("place")
 	used := map[string]int{}
@@ -424,7 +412,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 	fillReport(&rep, groups)
 	// readback of written dates
-	verifyTags(client, opt.Results, groups, &rep)
+	verifyTags(clients, opt.Results, groups, &rep)
 	writeReport(opt.Results, rep)
 	fmt.Fprintln(opt.Stdout, summaryText(rep))
 	if rep.TagErrors > 0 {
@@ -805,8 +793,8 @@ func cleanPartial(dir string) {
 	}
 }
 
-func readEmbedded(opt Options, groups []group) {
-	// one-shot batches; a missing read is treated as no embedded tags
+func readEmbedded(clients []*exiftool.Client, opt Options, groups []group, rep *Report) {
+	// A file ExifTool cannot read is treated as having no embedded tags.
 	var paths []string
 	index := map[string]int{}
 	for i := range groups {
@@ -814,83 +802,67 @@ func readEmbedded(opt Options, groups []group) {
 			continue
 		}
 		paths = append(paths, groups[i].staged)
-		index[groups[i].staged] = i
+		index[exiftool.PathKey(groups[i].staged)] = i
 	}
-	bin := opt.Exiftool
-	if bin == "" {
-		bin = "exiftool"
+	byKey, errs := exiftool.ReadAll(clients, paths, []string{
+		"DateTimeOriginal", "OffsetTimeOriginal", "CreationDate", "CreateDate",
+		"GPSLatitude", "GPSLongitude", "ContentIdentifier"}, true)
+	for _, err := range errs {
+		rep.Errors = append(rep.Errors, "read embedded tags: "+err.Error())
 	}
-	for start := 0; start < len(paths); start += 40 {
-		end := start + 40
-		if end > len(paths) {
-			end = len(paths)
-		}
-		args := append([]string{"-api", "QuickTimeUTC=1", "-json", "-n",
-			"-DateTimeOriginal", "-OffsetTimeOriginal", "-CreationDate", "-CreateDate",
-			"-GPSLatitude", "-GPSLongitude", "-ContentIdentifier"}, paths[start:end]...)
-		out, err := exec.Command(bin, args...).Output()
-		if err != nil {
+	for key, row := range byKey {
+		i, ok := index[key]
+		if !ok {
 			continue
 		}
-		var rows []map[string]any
-		if json.Unmarshal(out, &rows) != nil {
-			continue
+		g := &groups[i]
+		if s, _ := row["ContentIdentifier"].(string); s != "" {
+			g.contentID = s
 		}
-		for _, row := range rows {
-			src, _ := row["SourceFile"].(string)
-			i, ok := index[src]
-			if !ok {
-				continue
+		emb := dates.Embedded{}
+		if s, _ := row["DateTimeOriginal"].(string); s != "" {
+			if t, ok := parseExifTime(s); ok {
+				emb.DTO = &t
+				emb.HasDTO = true
+				g.haveEmb = true
+				g.embAt = t
+				if d, ok := parseOffset(fmt.Sprint(row["OffsetTimeOriginal"])); ok {
+					wall := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.UTC)
+					g.embAt = wall.Add(-d)
+				}
 			}
-			g := &groups[i]
-			if s, _ := row["ContentIdentifier"].(string); s != "" {
-				g.contentID = s
+		}
+		if s, _ := row["OffsetTimeOriginal"].(string); s != "" {
+			if d, ok := parseOffset(s); ok {
+				emb.Offset = &d
 			}
-			emb := dates.Embedded{}
-			if s, _ := row["DateTimeOriginal"].(string); s != "" {
-				if t, ok := parseExifTime(s); ok {
-					emb.DTO = &t
-					emb.HasDTO = true
+		}
+		// Videos store the capture time in CreationDate, not DateTimeOriginal.
+		// Without this, every later run rewrites the video and Finder shows today's date.
+		if !g.haveEmb {
+			if s, _ := row["CreationDate"].(string); s != "" {
+				if inst, ok := parseCreationInstant(s); ok {
 					g.haveEmb = true
-					g.embAt = t
-					if d, ok := parseOffset(fmt.Sprint(row["OffsetTimeOriginal"])); ok {
-						wall := time.Date(t.Year(), t.Month(), t.Day(), t.Hour(), t.Minute(), t.Second(), 0, time.UTC)
-						g.embAt = wall.Add(-d)
-					}
+					g.embAt = inst
+					emb.HasDTO = true
+					wall := inst
+					emb.DTO = &wall
 				}
 			}
-			if s, _ := row["OffsetTimeOriginal"].(string); s != "" {
-				if d, ok := parseOffset(s); ok {
-					emb.Offset = &d
-				}
-			}
-			// Videos store the capture time in CreationDate, not DateTimeOriginal.
-			// Without this, every later run rewrites the video and Finder shows today's date.
-			if !g.haveEmb {
-				if s, _ := row["CreationDate"].(string); s != "" {
-					if inst, ok := parseCreationInstant(s); ok {
-						g.haveEmb = true
-						g.embAt = inst
-						emb.HasDTO = true
-						wall := inst
-						emb.DTO = &wall
-					}
-				}
-			}
-			if lat, ok := asFloat(row["GPSLatitude"]); ok {
-				if lon, ok2 := asFloat(row["GPSLongitude"]); ok2 && !(lat == 0 && lon == 0) {
-					emb.HasGPS = true
-					emb.Lat, emb.Lon = lat, lon
-				}
-			}
-			g.when = dates.FromSidecar(side(g), emb, opt.Now)
-			if !g.when.OK {
-				if w := dates.FromEmbedded(emb, opt.Now); w.OK {
-					g.when = w
-				}
-			}
-			_ = emb
 		}
+		if lat, ok := asFloat(row["GPSLatitude"]); ok {
+			if lon, ok2 := asFloat(row["GPSLongitude"]); ok2 && !(lat == 0 && lon == 0) {
+				emb.HasGPS = true
+				emb.Lat, emb.Lon = lat, lon
+			}
+		}
+		g.when = dates.FromSidecar(side(g), emb, opt.Now)
+		if !g.when.OK {
+			if w := dates.FromEmbedded(emb, opt.Now); w.OK {
+				g.when = w
+			}
+		}
+		_ = emb
 	}
 }
 
@@ -1087,7 +1059,7 @@ func resolveDates(groups []group, opt Options) {
 	}
 }
 
-func writeTags(c *exiftool.Client, results string, g *group, id int) error {
+func writeTags(c tagRunner, results string, g *group, id int) error {
 	if !exiftool.Within(results, g.staged) && !strings.Contains(g.staged, ".takeout") {
 		return fmt.Errorf("refusing to write outside results: %s", g.staged)
 	}
@@ -1110,18 +1082,62 @@ func writeTags(c *exiftool.Client, results string, g *group, id int) error {
 	if err != nil {
 		return err
 	}
-	out, err := c.Exec(args, id+1)
-	if err != nil {
+	needUpdate := plan.WriteDates || plan.WriteGPS || plan.SetContentID != ""
+	if err := runWrite(c, args, id+1, needUpdate, time.Sleep); err != nil {
 		return err
-	}
-	if !exiftool.Updated(out) && (plan.WriteDates || plan.WriteGPS || plan.SetContentID != "") {
-		return fmt.Errorf("exiftool did not update: %s", strings.TrimSpace(out))
 	}
 	// ExifTool replaces the file, which clears the macOS creation date.
 	if g.when.OK {
 		_ = media.SetTimes(g.staged, g.when.Local())
 	}
 	return nil
+}
+
+// tagRunner is the part of an ExifTool client that writeTags needs.
+type tagRunner interface {
+	Run(args []string, id int) (exiftool.Reply, error)
+}
+
+// writeRetryDelays are the waits before each retry of a write that failed
+// because another process held the file (Windows Defender, the search indexer).
+var writeRetryDelays = []time.Duration{200 * time.Millisecond, 400 * time.Millisecond, 800 * time.Millisecond}
+
+// runWrite sends one write and retries it only for transient file-lock errors.
+// Other failures are reported at once, with ExifTool's own error text.
+func runWrite(c tagRunner, args []string, id int, needUpdate bool, sleep func(time.Duration)) error {
+	for attempt := 0; ; attempt++ {
+		r, err := c.Run(args, id)
+		if err != nil {
+			return err
+		}
+		if !needUpdate || exiftool.Updated(r.Out) {
+			return nil
+		}
+		if attempt < len(writeRetryDelays) && transientWriteError(r.Err) {
+			sleep(writeRetryDelays[attempt])
+			continue
+		}
+		msg := strings.TrimSpace(r.Err)
+		if msg == "" {
+			msg = strings.TrimSpace(r.Out)
+		}
+		if len(msg) > 500 {
+			msg = msg[:500]
+		}
+		return fmt.Errorf("exiftool did not update: %s", msg)
+	}
+}
+
+// transientWriteError reports ExifTool errors caused by another process
+// briefly holding the file or its temporary copy.
+func transientWriteError(stderr string) bool {
+	s := strings.ToLower(stderr)
+	for _, k := range []string{"error renaming", "temporary file", "sharing violation", "being used by another process"} {
+		if strings.Contains(s, k) {
+			return true
+		}
+	}
+	return false
 }
 
 func place(opt Options, g *group, used map[string]int, journal *state.Journal) error {
@@ -1398,8 +1414,7 @@ func fillReport(rep *Report, groups []group) {
 	}
 }
 
-func verifyTags(c *exiftool.Client, results string, groups []group, rep *Report) {
-	_ = c
+func verifyTags(clients []*exiftool.Client, results string, groups []group, rep *Report) {
 	type item struct {
 		i    int
 		path string
@@ -1416,38 +1431,44 @@ func verifyTags(c *exiftool.Client, results string, groups []group, rep *Report)
 		}
 		items = append(items, item{i, filepath.Join(results, g.outRel), g.when.Local().Format("2006:01:02")})
 	}
-	for start := 0; start < len(items); start += 40 {
-		end := start + 40
-		if end > len(items) {
-			end = len(items)
-		}
-		args := []string{"-api", "QuickTimeUTC=1", "-json", "-DateTimeOriginal", "-CreationDate"}
-		for _, it := range items[start:end] {
-			args = append(args, it.path)
-		}
-		out, err := exec.Command("exiftool", args...).Output()
-		if err != nil {
-			continue
-		}
-		var rows []map[string]any
-		if json.Unmarshal(out, &rows) != nil {
-			continue
-		}
-		got := map[string]string{}
-		for _, row := range rows {
-			src, _ := row["SourceFile"].(string)
-			dto, _ := row["DateTimeOriginal"].(string)
-			cre, _ := row["CreationDate"].(string)
-			got[src] = dto + " " + cre
-		}
-		for _, it := range items[start:end] {
-			if !strings.Contains(got[it.path], it.day) {
-				rep.TagErrors++
-				if len(rep.Errors) < 30 {
-					rep.Errors = append(rep.Errors, "readback "+filepath.Base(it.path))
-				}
+	paths := make([]string, len(items))
+	for i, it := range items {
+		paths[i] = it.path
+	}
+	rows, errs := exiftool.ReadAll(clients, paths, []string{"DateTimeOriginal", "CreationDate"}, false)
+	for _, err := range errs {
+		rep.Errors = append(rep.Errors, "readback: "+err.Error())
+	}
+	for _, it := range items {
+		row := rows[exiftool.PathKey(it.path)]
+		dto, _ := row["DateTimeOriginal"].(string)
+		cre, _ := row["CreationDate"].(string)
+		if !strings.Contains(dto+" "+cre, it.day) {
+			rep.TagErrors++
+			if len(rep.Errors) < 30 {
+				rep.Errors = append(rep.Errors, "readback "+filepath.Base(it.path))
 			}
 		}
+	}
+}
+
+// startClients starts n stay_open ExifTool processes, or none on error.
+func startClients(bin string, n int) ([]*exiftool.Client, error) {
+	clients := make([]*exiftool.Client, 0, n)
+	for range n {
+		c, err := exiftool.Start(bin)
+		if err != nil {
+			closeClients(clients)
+			return nil, err
+		}
+		clients = append(clients, c)
+	}
+	return clients, nil
+}
+
+func closeClients(clients []*exiftool.Client) {
+	for _, c := range clients {
+		c.Close()
 	}
 }
 
@@ -1629,7 +1650,12 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	if rep.TagErrors > 0 {
 		return ExitTagErrors, rep, nil
 	}
-	bad, err := YearMismatches(opt.Results)
+	clients, err := startClients(opt.Exiftool, 4)
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	defer closeClients(clients)
+	bad, err := YearMismatches(clients, opt.Results)
 	if err != nil {
 		return ExitReconcile, rep, err
 	}

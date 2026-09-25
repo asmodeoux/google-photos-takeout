@@ -12,13 +12,23 @@ import (
 	"sync"
 )
 
+// maxStderr caps the stderr text kept for one command.
+const maxStderr = 8 << 10
+
 // Client is one long-lived ExifTool process.
 type Client struct {
 	cmd  *exec.Cmd
 	in   io.WriteCloser
 	out  *bufio.Reader
+	errs chan string // stderr lines, closed when stderr ends
 	mu   sync.Mutex
 	path string
+}
+
+// Reply is what one -execute block printed.
+type Reply struct {
+	Out string // stdout, without the {readyN} line
+	Err string // stderr, without the {errdoneN} line, at most maxStderr bytes
 }
 
 // Start launches exiftool -stay_open.
@@ -38,58 +48,86 @@ func Start(bin string) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Stderr must be drained. A full pipe blocks ExifTool, which then never
-	// prints {ready} and the whole run stalls.
-	cmd.Stderr = io.Discard
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, err
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	return &Client{cmd: cmd, in: stdin, out: bufio.NewReader(stdout), path: bin}, nil
+	c := newClient(stdin, stdout, stderr)
+	c.cmd = cmd
+	c.path = bin
+	return c, nil
 }
 
-// Exec sends one file's arguments and waits for {readyID}.
+// newClient wires the three streams. Stderr is read in a goroutine for the
+// whole life of the process: a full stderr pipe would block ExifTool.
+func newClient(in io.WriteCloser, out, errOut io.Reader) *Client {
+	c := &Client{in: in, out: bufio.NewReader(out), errs: make(chan string, 256)}
+	go func() {
+		sc := bufio.NewScanner(errOut)
+		sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+		for sc.Scan() {
+			c.errs <- sc.Text()
+		}
+		close(c.errs)
+	}()
+	return c
+}
+
+// Exec sends one block of arguments and returns its stdout.
 func (c *Client) Exec(args []string, id int) (string, error) {
+	r, err := c.Run(args, id)
+	return r.Out, err
+}
+
+// Run sends one block of arguments and waits until both {readyN} on stdout and
+// {errdoneN} on stderr arrive, so no output leaks into the next block.
+func (c *Client) Run(args []string, id int) (Reply, error) {
 	if err := CheckArgs(args); err != nil {
-		return "", err
+		return Reply{}, err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	n := strconv.Itoa(id)
+	var w strings.Builder
 	for _, a := range args {
-		if _, err := io.WriteString(c.in, a+"\n"); err != nil {
-			return "", err
-		}
+		w.WriteString(a)
+		w.WriteByte('\n')
 	}
-	if _, err := io.WriteString(c.in, "-execute"+strconv.Itoa(id)+"\n"); err != nil {
-		return "", err
+	w.WriteString("-echo4\n{errdone" + n + "}\n-execute" + n + "\n")
+	if _, err := io.WriteString(c.in, w.String()); err != nil {
+		return Reply{}, err
 	}
-	var b strings.Builder
-	ready := "{ready" + strconv.Itoa(id) + "}"
+	var r Reply
+	ready := "{ready" + n + "}"
+	var out strings.Builder
 	for {
 		line, err := c.out.ReadString('\n')
-		if len(line) > 0 {
-			b.WriteString(line)
-		}
-		if strings.Contains(b.String(), ready) {
+		if strings.TrimSpace(line) == ready {
 			break
 		}
+		out.WriteString(line)
 		if err != nil {
-			return b.String(), fmt.Errorf("exiftool: %w", err)
+			return Reply{Out: out.String()}, fmt.Errorf("exiftool: %w", err)
 		}
 	}
-	// stderr is line-buffered; read what is already there without blocking forever.
-	return b.String(), nil
-}
-
-func drain(r *bufio.Reader) string {
-	var b strings.Builder
-	for r.Buffered() > 0 {
-		line, err := r.ReadString('\n')
-		b.WriteString(line)
-		if err != nil {
-			break
+	r.Out = out.String()
+	done := "{errdone" + n + "}"
+	var errb strings.Builder
+	for line := range c.errs {
+		if strings.TrimSpace(line) == done {
+			r.Err = errb.String()
+			return r, nil
+		}
+		if errb.Len() < maxStderr {
+			errb.WriteString(line)
+			errb.WriteByte('\n')
 		}
 	}
-	return b.String()
+	r.Err = errb.String()
+	return r, fmt.Errorf("exiftool: stderr closed before %s", done)
 }
 
 // Close ends the stay_open process.
@@ -101,7 +139,9 @@ func (c *Client) Close() {
 	defer c.mu.Unlock()
 	_, _ = io.WriteString(c.in, "-stay_open\nFalse\n")
 	_ = c.in.Close()
-	_ = c.cmd.Wait()
+	if c.cmd != nil {
+		_ = c.cmd.Wait()
+	}
 }
 
 // Look returns the exiftool path or an error with the install hint.
