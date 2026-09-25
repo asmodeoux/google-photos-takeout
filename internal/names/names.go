@@ -184,7 +184,12 @@ func OutputExt(trueType, original string, liveVideo bool) string {
 	case "heic":
 		return ".heic"
 	case "webm":
-		return ".mov"
+		// Untranscoded WebM or Matroska bytes keep their own extension. A
+		// transcoded file has kind mov by the time it is named.
+		if e := strings.ToLower(path.Ext(original)); e == ".mkv" {
+			return e
+		}
+		return ".webm"
 	case "mov":
 		return ".mov"
 	case "mp4":

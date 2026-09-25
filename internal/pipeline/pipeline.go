@@ -109,7 +109,10 @@ type Report struct {
 	NamesReason    string         `json:"names_reason,omitempty"`
 	AlbumRenames   []string       `json:"album_renames,omitempty"`
 	TagErrorFiles  []TagErrorFile `json:"tag_error_files,omitempty"`
-	Retries        Retries        `json:"retries"`
+	// Failed counts media that never reached the library; FailedFiles says why.
+	Failed      int          `json:"failed"`
+	FailedFiles []FailedFile `json:"failed_files,omitempty"`
+	Retries     Retries      `json:"retries"`
 	// Seconds is the wall time of each phase. FilesPerSecond is for tags.
 	Seconds        map[string]float64 `json:"seconds,omitempty"`
 	FilesPerSecond float64            `json:"files_per_second,omitempty"`
@@ -122,7 +125,13 @@ type TagErrorFile struct {
 	Stderr string `json:"stderr"`
 }
 
-// maxTagErrorFiles bounds tag_error_files in the report.
+// FailedFile is one zip entry that could not be read or placed.
+type FailedFile struct {
+	Entry string `json:"entry"`
+	Error string `json:"error"`
+}
+
+// maxTagErrorFiles bounds tag_error_files and failed_files in the report.
 const maxTagErrorFiles = 40
 
 // Retries counts waits for another process, usually antivirus or the search
@@ -185,7 +194,10 @@ type group struct {
 	idCopied    bool
 	motion      bool
 	tagErr      string
-	skip        bool
+	// failErr is set when the file never reached the library: the zip entry
+	// could not be read or the file could not be placed.
+	failErr string
+	skip    bool
 }
 
 // Run executes check, unzip, or the full organize.
@@ -433,7 +445,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		if g.placeholder {
 			if err := extractGroup(readers, g, opt.Results, journal); err != nil {
 				rep.Errors = append(rep.Errors, err.Error())
-				g.tagErr = err.Error()
+				g.failErr = err.Error()
 			}
 			continue
 		}
@@ -443,7 +455,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		}
 		if err := extractGroup(readers, g, opt.Results, journal); err != nil {
 			rep.Errors = append(rep.Errors, err.Error())
-			g.tagErr = err.Error()
+			g.failErr = err.Error()
 			continue
 		}
 		placed++
@@ -454,13 +466,14 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		}
 	}
 	for i := range groups {
-		if groups[i].trueType == "webm" && groups[i].staged != "" {
+		if groups[i].trueType == "webm" && groups[i].staged != "" && groups[i].outRel == "" {
 			if err := transcodeOrKeep(ctx, opt, &groups[i]); err != nil {
 				if ctx.Err() != nil {
 					return ExitInterrupt, rep, nil
 				}
-				rep.Errors = append(rep.Errors, err.Error())
-				groups[i].tagErr = err.Error()
+				// The original stays, unconverted, in not-importable/.
+				rep.Errors = append(rep.Errors, groups[i].members[groups[i].canon].Name+": "+err.Error())
+				groups[i].outRel = "not-importable"
 			}
 		}
 	}
@@ -508,7 +521,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 			continue
 		}
 		if err := place(opt, g, pl, rule, journal); err != nil {
-			g.tagErr = err.Error()
+			g.failErr = err.Error()
 			rep.Errors = append(rep.Errors, err.Error())
 		}
 	}
@@ -563,10 +576,19 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 	writeReport(opt.Results, rep)
 	fmt.Fprintln(opt.Stdout, summaryText(rep))
+	if rep.Failed > 0 {
+		return ExitReconcile, rep, errFailed(rep.Failed, opt.Results)
+	}
 	if rep.TagErrors > 0 {
 		return ExitTagErrors, rep, nil
 	}
 	return ExitOK, rep, nil
+}
+
+// errFailed says that some media never reached the library.
+func errFailed(n int, results string) error {
+	return fmt.Errorf("%d file(s) from the zips are not in the library. failed_files in %s lists each one and why; a damaged zip part must be downloaded again. Run the same command after fixing it",
+		n, filepath.Join(results, ".takeout", "report.json"))
 }
 
 func whens(gs []group) []dates.When {
@@ -1860,17 +1882,21 @@ func ledger(entries []zipindex.Entry, groups []group, skipped, screenshots []zip
 	for _, g := range groups {
 		fate := "library"
 		switch {
+		case g.failErr != "":
+			fate = "error"
 		case g.placeholder:
 			fate = "placeholder"
 		case g.skip:
 			fate = "excluded-trash"
 		case strings.HasPrefix(g.outRel, "not-importable"):
 			fate = "not-importable"
-		case g.tagErr != "":
-			fate = "error"
 		}
 		for _, m := range g.members {
 			key := m.ZipPath + "\x00" + m.EntryName
+			if fate == "error" {
+				fateOf[key] = fate
+				continue
+			}
 			if zipindex.Classify(m.RelFolder) == zipindex.ClassTrash && !includeTrash {
 				fateOf[key] = "excluded-trash"
 				continue
@@ -1904,6 +1930,14 @@ func fillReport(rep *Report, groups []group) {
 		if g.motion {
 			rep.Motions++
 		}
+		if g.failErr != "" {
+			rep.Failed++
+			if len(rep.FailedFiles) < maxTagErrorFiles {
+				m := g.members[g.canon]
+				rep.FailedFiles = append(rep.FailedFiles, FailedFile{Entry: m.RelFolder + "/" + m.Name, Error: g.failErr})
+			}
+			continue
+		}
 		if g.placeholder || g.skip {
 			continue
 		}
@@ -1924,7 +1958,7 @@ func fillReport(rep *Report, groups []group) {
 		if g.when.HasGPS {
 			rep.WithGPS++
 		}
-		if !g.when.OK {
+		if !g.when.OK || strings.HasPrefix(g.outRel, "not-importable") {
 			rep.Unknown++
 			continue
 		}
@@ -2235,8 +2269,8 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	if missing > 0 {
 		return ExitReconcile, rep, fmt.Errorf("%d journal files are missing", missing)
 	}
-	if rep.TagErrors > 0 {
-		return ExitTagErrors, rep, nil
+	if rep.Failed > 0 {
+		return ExitReconcile, rep, errFailed(rep.Failed, opt.Results)
 	}
 	clients, err := startClients(opt.Exiftool, 4)
 	if err != nil {
@@ -2256,6 +2290,10 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	}
 	_ = ctx
 	_ = j
+	// Files with tag errors are in the library; the year check above still ran.
+	if rep.TagErrors > 0 {
+		return ExitTagErrors, rep, nil
+	}
 	return ExitOK, rep, nil
 }
 

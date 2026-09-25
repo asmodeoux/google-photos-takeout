@@ -55,6 +55,10 @@ func TestOutputExt(t *testing.T) {
 	if OutputExt("mp4", "v.mp4", false) != ".mp4" {
 		t.Fatal("keep mp4")
 	}
+	// WebM bytes that were not converted must not be named .mov.
+	if OutputExt("webm", "clip.webm", false) != ".webm" || OutputExt("webm", "old.MKV", false) != ".mkv" {
+		t.Fatal("untranscoded webm/mkv")
+	}
 	if ReplaceExt("18.12.12 - 8", ".png") != "18.12.12 - 8.png" {
 		t.Fatal("extensionless")
 	}
