@@ -190,7 +190,7 @@ func OutputExt(trueType, original string, liveVideo bool) string {
 	case "mp4":
 		e := strings.ToLower(path.Ext(original))
 		switch e {
-		case ".mp4", ".mov", ".m4v":
+		case ".mp4", ".mov", ".m4v", ".3gp", ".3g2":
 			return e
 		default:
 			return ".mp4"
@@ -215,7 +215,7 @@ func ReplaceExt(name, ext string) string {
 func knownExt(e string) bool {
 	switch e {
 	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif",
-		".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi":
+		".mp4", ".mov", ".m4v", ".3gp", ".3g2", ".mkv", ".webm", ".avi":
 		return true
 	}
 	return false
