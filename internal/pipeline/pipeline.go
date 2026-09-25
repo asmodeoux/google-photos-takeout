@@ -990,7 +990,12 @@ func kindOf(head []byte, name string) string {
 }
 
 func kindFromExt(p string) string {
-	switch strings.ToLower(filepath.Ext(p)) {
+	ext := strings.ToLower(filepath.Ext(p))
+	// Pixel motion videos: PXL_x.MP, PXL_x.MV, and copies named PXL_x.MP~2.
+	if ext == ".mp" || ext == ".mv" || strings.HasPrefix(ext, ".mp~") {
+		return "mp4"
+	}
+	switch ext {
 	case ".dng", ".cr2", ".nef", ".nrw", ".arw", ".srw", ".pef", ".orf", ".rw2", ".raf":
 		return "raw"
 	case ".cr3":
@@ -1009,8 +1014,10 @@ func kindFromExt(p string) string {
 		return "heic"
 	case ".mov":
 		return "mov"
-	case ".mp4", ".m4v":
+	case ".mp4", ".m4v", ".3gp", ".3g2":
 		return "mp4"
+	case ".webm", ".mkv":
+		return "webm"
 	default:
 		return "unknown"
 	}

@@ -17,3 +17,11 @@ func TestKindOfRawNeedsRawExtension(t *testing.T) {
 		}
 	}
 }
+
+func TestKindFromExtPixelMotion(t *testing.T) {
+	for _, n := range []string{"PXL_1.MP", "PXL_1.mv", "PXL_1.MP~2"} {
+		if got := kindFromExt(n); got != "mp4" {
+			t.Errorf("kindFromExt(%q) = %s", n, got)
+		}
+	}
+}
