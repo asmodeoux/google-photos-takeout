@@ -26,7 +26,7 @@ type Client struct {
 	cmd  *exec.Cmd
 	in   io.WriteCloser
 	out  *bufio.Reader
-	errs chan string // stderr lines, closed when stderr ends
+	errs *lineQueue // stderr lines
 	mu   sync.Mutex
 	path string
 	dead atomic.Bool // set by Kill; Close must not wait on a stuck command
@@ -68,24 +68,90 @@ func Start(bin string) (*Client, error) {
 }
 
 // newClient wires the three streams. Stderr is read in a goroutine for the
-// whole life of the process: a full stderr pipe would block ExifTool.
+// whole life of the process and that goroutine never blocks: ExifTool may
+// write any amount of stderr before the {readyN} line Run waits for.
 func newClient(in io.WriteCloser, out, errOut io.Reader) *Client {
-	c := &Client{in: in, out: bufio.NewReader(out), errs: make(chan string, 256)}
+	c := &Client{in: in, out: bufio.NewReader(out), errs: newLineQueue()}
 	go func() {
-		sc := bufio.NewScanner(errOut)
-		sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
-		for sc.Scan() {
-			c.errs <- sc.Text()
+		br := bufio.NewReaderSize(errOut, 64<<10)
+		for {
+			line, err := readLine(br)
+			if line != "" || err == nil {
+				c.errs.push(line)
+			}
+			if err != nil {
+				break
+			}
 		}
-		close(c.errs)
+		c.errs.close()
 	}()
 	return c
 }
 
-// Exec sends one block of arguments and returns its stdout.
-func (c *Client) Exec(args []string, id int) (string, error) {
-	r, err := c.Run(args, id)
-	return r.Out, err
+// readLine reads one line without its newline. A line longer than the reader's
+// buffer is cut there and the rest of it is skipped.
+func readLine(br *bufio.Reader) (string, error) {
+	b, err := br.ReadSlice('\n')
+	line := strings.TrimRight(string(b), "\r\n")
+	for err == bufio.ErrBufferFull {
+		_, err = br.ReadSlice('\n')
+	}
+	return line, err
+}
+
+// lineQueue holds stderr lines until Run takes them. It keeps at most
+// maxStderr bytes of ordinary lines; marker lines are always kept.
+type lineQueue struct {
+	mu     sync.Mutex
+	cond   *sync.Cond
+	lines  []string
+	size   int
+	closed bool
+}
+
+func newLineQueue() *lineQueue {
+	q := &lineQueue{}
+	q.cond = sync.NewCond(&q.mu)
+	return q
+}
+
+func (q *lineQueue) push(line string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	marker := strings.HasPrefix(strings.TrimSpace(line), "{errdone")
+	if !marker && q.size >= maxStderr {
+		return
+	}
+	if !marker {
+		q.size += len(line)
+	}
+	q.lines = append(q.lines, line)
+	q.cond.Broadcast()
+}
+
+func (q *lineQueue) close() {
+	q.mu.Lock()
+	q.closed = true
+	q.cond.Broadcast()
+	q.mu.Unlock()
+}
+
+// next waits for a line. ok is false once stderr has ended and is empty.
+func (q *lineQueue) next() (line string, ok bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	for len(q.lines) == 0 && !q.closed {
+		q.cond.Wait()
+	}
+	if len(q.lines) == 0 {
+		return "", false
+	}
+	line = q.lines[0]
+	q.lines = q.lines[1:]
+	if !strings.HasPrefix(strings.TrimSpace(line), "{errdone") {
+		q.size -= len(line)
+	}
+	return line, true
 }
 
 // Run sends one block of arguments and waits until both {readyN} on stdout and
@@ -122,7 +188,11 @@ func (c *Client) Run(args []string, id int) (Reply, error) {
 	r.Out = out.String()
 	done := "{errdone" + n + "}"
 	var errb strings.Builder
-	for line := range c.errs {
+	for {
+		line, ok := c.errs.next()
+		if !ok {
+			break
+		}
 		if strings.TrimSpace(line) == done {
 			r.Err = errb.String()
 			return r, nil

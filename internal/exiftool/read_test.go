@@ -48,12 +48,15 @@ func TestPathKeyUnixKeepsBackslashAndCase(t *testing.T) {
 
 // fakeTool answers each block on stdout and stderr like ExifTool does.
 type fakeTool struct {
-	inR       *io.PipeReader
-	outW      *io.PipeWriter
-	errW      *io.PipeWriter
-	stderrLag time.Duration
-	stdout    func(args []string) string
-	stderr    func(args []string) string
+	// stderrFirst writes all of stderr before the {readyN} line, which is
+	// what ExifTool does with many warnings.
+	stderrFirst bool
+	inR         *io.PipeReader
+	outW        *io.PipeWriter
+	errW        *io.PipeWriter
+	stderrLag   time.Duration
+	stdout      func(args []string) string
+	stderr      func(args []string) string
 }
 
 func startFake(t *testing.T, f *fakeTool) *Client {
@@ -89,6 +92,10 @@ func startFake(t *testing.T, f *fakeTool) *Client {
 					}
 					if f.stderr != nil {
 						errText = f.stderr(args)
+					}
+					if f.stderrFirst {
+						io.WriteString(errW, errText)
+						errText = ""
 					}
 					io.WriteString(outW, out+"{ready"+id+"}\n")
 					go func(e, d string) {
@@ -296,5 +303,62 @@ func TestReadAllFindsRelativePaths(t *testing.T) {
 	}
 	if row, ok := rows[PathKey(rel)]; !ok || row["FileType"] != "JPEG" {
 		t.Fatalf("no row for %s in %v", rel, rows)
+	}
+}
+
+// runWithin fails the test instead of hanging when Run deadlocks.
+func runWithin(t *testing.T, c *Client, args []string, id int) Reply {
+	t.Helper()
+	type res struct {
+		r   Reply
+		err error
+	}
+	ch := make(chan res, 1)
+	go func() {
+		r, err := c.Run(args, id)
+		ch <- res{r, err}
+	}()
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		return got.r
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run hung")
+	}
+	return Reply{}
+}
+
+func TestManyStderrLinesBeforeReadyDoNotHang(t *testing.T) {
+	f := &fakeTool{
+		stderrFirst: true,
+		stdout:      func(a []string) string { return "    1 image files updated\n" },
+		stderr:      func(a []string) string { return strings.Repeat("Warning: minor\n", 5000) },
+	}
+	c := startFake(t, f)
+	r := runWithin(t, c, []string{"-m", "/tmp/a.jpg"}, 1)
+	if !Updated(r.Out) || !strings.Contains(r.Err, "Warning: minor") || len(r.Err) > maxStderr+64 {
+		t.Fatalf("out %q, %d bytes of stderr", r.Out, len(r.Err))
+	}
+	f.stderr = func(a []string) string { return "" }
+	if r := runWithin(t, c, []string{"-m", "/tmp/b.jpg"}, 2); r.Err != "" {
+		t.Fatalf("stderr leaked into the next command: %d bytes", len(r.Err))
+	}
+}
+
+func TestHugeStderrLineDoesNotBreakTheClient(t *testing.T) {
+	f := &fakeTool{
+		stdout: func(a []string) string { return "    1 image files updated\n" },
+		stderr: func(a []string) string { return "Error: " + strings.Repeat("x", 2<<20) + "\n" },
+	}
+	c := startFake(t, f)
+	r := runWithin(t, c, []string{"-m", "/tmp/a.jpg"}, 1)
+	if !strings.HasPrefix(r.Err, "Error: xxx") {
+		t.Fatalf("stderr %q", r.Err[:min(len(r.Err), 40)])
+	}
+	f.stderr = func(a []string) string { return "Warning: second\n" }
+	if r := runWithin(t, c, []string{"-m", "/tmp/b.jpg"}, 2); !strings.Contains(r.Err, "second") {
+		t.Fatalf("second command stderr %q", r.Err)
 	}
 }

@@ -159,7 +159,7 @@ func TestCheckArgsAndExecRefuseLineBreaks(t *testing.T) {
 		t.Fatal(err)
 	}
 	var c Client
-	if _, err := c.Exec([]string{"/tmp/x\n-execute"}, 1); err == nil {
+	if _, err := c.Run([]string{"/tmp/x\n-execute"}, 1); err == nil {
 		t.Fatal("Exec must refuse before writing")
 	}
 }
