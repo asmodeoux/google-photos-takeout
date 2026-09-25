@@ -19,6 +19,10 @@ type lockInfo struct {
 // ErrLocked means another takeout run is using the results folder.
 var ErrLocked = errors.New("results folder is in use")
 
+// ErrNoLocking means the filesystem cannot lock files (some network shares).
+// The run can go on; only two runs at once would be unsafe.
+var ErrNoLocking = errors.New("this filesystem does not support file locks")
+
 // Lock claims dir for one run with an operating-system lock on dir/lock
 // (flock, or LockFileEx on Windows). The system drops the lock when the
 // process ends, however it ends, so a crash never leaves the folder locked.
@@ -34,6 +38,9 @@ func Lock(dir string) (release func(), err error) {
 	}
 	if err := lockFile(f); err != nil {
 		f.Close()
+		if !heldElsewhere(err) {
+			return func() {}, fmt.Errorf("%w (%v)", ErrNoLocking, err)
+		}
 		var other lockInfo
 		b, _ := os.ReadFile(p)
 		if json.Unmarshal(b, &other) != nil || other.PID == 0 {

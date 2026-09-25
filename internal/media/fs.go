@@ -2,7 +2,9 @@ package media
 
 import (
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -35,23 +37,35 @@ func Copy(src, dst string) error {
 	return copyFile(src, dst)
 }
 
+// copyFile writes a hidden sibling first and moves it into place without
+// replacing anything, so a crash never leaves a truncated file under the
+// final name, where a resumed run would take it as complete.
 func copyFile(src, dst string) error {
+	if _, err := os.Lstat(dst); err == nil {
+		return &os.LinkError{Op: "copy", Old: src, New: dst, Err: fs.ErrExist}
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	tmp := filepath.Join(filepath.Dir(dst), "."+filepath.Base(dst)+".partial")
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	_, err = io.Copy(out, in)
-	cerr := out.Close()
-	if err == nil {
+	if serr := out.Sync(); err == nil {
+		err = serr
+	}
+	if cerr := out.Close(); err == nil {
 		err = cerr
 	}
+	if err == nil {
+		err = Rename(tmp, dst)
+	}
 	if err != nil {
-		_ = os.Remove(dst)
+		_ = os.Remove(tmp)
 	}
 	return err
 }

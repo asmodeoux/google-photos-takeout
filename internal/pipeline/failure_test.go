@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asmodeoux/google-photos-takeout/internal/state"
 	"github.com/asmodeoux/google-photos-takeout/internal/testgen"
 )
 
@@ -189,6 +191,14 @@ func TestVerifyFailurePaths(t *testing.T) {
 		{"failed files in the report", func(t *testing.T, results string) {
 			editReport(t, results, func(m map[string]any) { m["failed"] = 1 })
 		}, ExitReconcile},
+		{"album copy deleted", func(t *testing.T, results string) {
+			os.RemoveAll(filepath.Join(results, "albums"))
+		}, ExitReconcile},
+		{"leftover intent line for a finished file", func(t *testing.T, results string) {
+			rec := lastRecord(t, results, "2019/a.jpg")
+			appendRecord(t, results, state.Rec{ID: rec.ID, SHA: rec.SHA, Stage: "placing", Path: "2019/never-made.jpg"})
+			appendRecord(t, results, rec)
+		}, ExitOK},
 		{"no report", func(t *testing.T, results string) {
 			os.Remove(filepath.Join(results, ".takeout", "report.json"))
 		}, ExitPreflight},
@@ -196,7 +206,15 @@ func TestVerifyFailurePaths(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
-			arch := writeTakeout(t, dir, map[string][]byte{"a.jpg": testgen.JPEG(1), "b.jpg": testgen.JPEG(2)})
+			tk := testgen.New()
+			side := &testgen.Side{Taken: time.Date(2019, 3, 4, 9, 0, 0, 0, time.UTC)}
+			tk.Photo(1, "Photos from 2019", "a.jpg", testgen.JPEG(1), side)
+			tk.Photo(1, "Photos from 2019", "b.jpg", testgen.JPEG(2), side)
+			tk.Photo(1, "Trip", "a.jpg", testgen.JPEG(1), side)
+			arch := filepath.Join(dir, "archives")
+			if _, err := tk.Write(arch); err != nil {
+				t.Fatal(err)
+			}
 			results := filepath.Join(dir, "results")
 			if code, _, err := Run(context.Background(), testOptions(arch, results)); code != ExitOK {
 				t.Fatalf("run exit %d: %v", code, err)
@@ -245,6 +263,26 @@ func TestTagErrorExitsFourAndIsListed(t *testing.T) {
 	}
 	if rep.Library != 2 || rep.Failed != 0 {
 		t.Fatalf("library %d failed %d", rep.Library, rep.Failed)
+	}
+	if vcode, _, verr := Verify(context.Background(), Options{Results: results}); vcode != ExitTagErrors {
+		t.Fatalf("verify exit %d (%v), want %d", vcode, verr, ExitTagErrors)
+	}
+}
+
+// With more tag errors than the report lists by name, verify still reports
+// exit 4, not a wrong year folder for the ones past the list.
+func TestManyTagErrorsVerifyAsFour(t *testing.T) {
+	requireTools(t, "exiftool")
+	dir := t.TempDir()
+	files := map[string][]byte{"good.jpg": testgen.JPEG(1)}
+	for i := 0; i < maxTagErrorFiles+5; i++ {
+		files[fmt.Sprintf("broken%02d.jpg", i)] = []byte(fmt.Sprintf("\xff\xd8\xff\xe0\x00\x10JFIF\x00broken-%d", i))
+	}
+	arch := writeTakeout(t, dir, files)
+	results := filepath.Join(dir, "results")
+	code, rep, _ := Run(context.Background(), testOptions(arch, results))
+	if code != ExitTagErrors || rep.TagErrors != maxTagErrorFiles+5 {
+		t.Fatalf("run exit %d, tag errors %d", code, rep.TagErrors)
 	}
 	if vcode, _, verr := Verify(context.Background(), Options{Results: results}); vcode != ExitTagErrors {
 		t.Fatalf("verify exit %d (%v), want %d", vcode, verr, ExitTagErrors)

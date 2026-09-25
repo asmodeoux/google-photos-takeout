@@ -68,6 +68,25 @@ func OpenJournal(path string) (*Journal, error) {
 	return j, nil
 }
 
+// ReadJournal returns the latest record for every id without opening the
+// journal for writing, for status and verify, which may run next to a run.
+func ReadJournal(path string) (map[string]Rec, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	recs := map[string]Rec{}
+	sc := bufio.NewScanner(bytes.NewReader(b))
+	sc.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	for sc.Scan() {
+		var r Rec
+		if json.Unmarshal(sc.Bytes(), &r) == nil && r.ID != "" {
+			recs[r.ID] = r
+		}
+	}
+	return recs, nil
+}
+
 func (j *Journal) Get(id string) (Rec, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()

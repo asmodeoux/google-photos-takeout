@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"io/fs"
 	"math"
@@ -109,6 +110,9 @@ type Report struct {
 	NamesReason    string         `json:"names_reason,omitempty"`
 	AlbumRenames   []string       `json:"album_renames,omitempty"`
 	TagErrorFiles  []TagErrorFile `json:"tag_error_files,omitempty"`
+	// TagErrorPaths lists every file with a tag error, without the cap, so
+	// verify can tell them from files in the wrong year folder.
+	TagErrorPaths []string `json:"tag_error_paths,omitempty"`
 	// Failed counts media that never reached the library; FailedFiles says why.
 	Failed      int          `json:"failed"`
 	FailedFiles []FailedFile `json:"failed_files,omitempty"`
@@ -407,6 +411,10 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		return ExitPreflight, rep, err
 	}
 	release, err := state.Lock(filepath.Join(opt.Results, ".takeout"))
+	if errors.Is(err, state.ErrNoLocking) {
+		fmt.Fprintf(opt.Stdout, "note: %v. Do not start a second takeout on %s while this one runs.\n", err, opt.Results)
+		err = nil
+	}
 	if err != nil {
 		if errors.Is(err, state.ErrLocked) {
 			err = errLocked(err)
@@ -534,7 +542,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 			return ExitInterrupt, rep, nil
 		}
 		g := &groups[i]
-		if g.skip || g.staged == "" {
+		if g.skip || g.staged == "" || g.failErr != "" {
 			continue
 		}
 		if err := place(opt, g, pl, rule, journal); err != nil {
@@ -588,6 +596,11 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	rep.Seconds = timer.secs
 	if s := rep.Seconds["tags"]; s > 0 {
 		rep.FilesPerSecond = math.Round(float64(toTag)/s*10) / 10
+	}
+	for _, g := range groups {
+		if g.tagErr != "" && g.outRel != "" {
+			rep.TagErrorPaths = append(rep.TagErrorPaths, filepath.ToSlash(g.outRel))
+		}
 	}
 	rep.TagErrorFiles = append(tagErrorFiles(groups), rep.TagErrorFiles...)
 	if len(rep.TagErrorFiles) > maxTagErrorFiles {
@@ -960,11 +973,8 @@ func extractGroup(readers map[string]*zipSet, g *group, results string, journal 
 	if rec, ok := journal.Get(g.id); ok && rec.SHA != "" && rec.Stage != "" && rec.Stage != "staged" {
 		p := filepath.Join(results, ".takeout", "staging", rec.SHA)
 		outRel := ""
-		if rec.Path != "" {
-			placed := filepath.Join(results, filepath.FromSlash(rec.Path))
-			if _, err := os.Stat(placed); err == nil || rec.Stage != "placing" {
-				p, outRel = placed, filepath.FromSlash(rec.Path)
-			}
+		if rec.Path != "" && (rec.Stage != "placing" || movedBeforeCrash(results, rec)) {
+			p, outRel = filepath.Join(results, filepath.FromSlash(rec.Path)), filepath.FromSlash(rec.Path)
 		}
 		if st, err := os.Stat(p); err == nil && st.Size() > 0 {
 			g.staged = p
@@ -1752,13 +1762,22 @@ func (p *placer) moveInto(src, dir, base, pairKey string, intent func(rel string
 }
 
 func place(opt Options, g *group, pl *placer, rule names.Rule, journal *state.Journal) error {
-	// "placing" means the move may have happened before a crash; the file at
-	// that path can only be this one, because names are picked only when free.
-	if st := recStage(journal, g.id); st == "placed" || st == "placing" || st == "cloned" {
-		if rec, ok := journal.Get(g.id); ok && rec.Path != "" {
-			rel := filepath.FromSlash(rec.Path)
+	prev, hadPrev := journal.Get(g.id)
+	if hadPrev && prev.Path != "" {
+		rel := filepath.FromSlash(prev.Path)
+		done := prev.Stage == "placed" || prev.Stage == "cloned"
+		// A "placing" record counts only when extractGroup found that the
+		// move happened (its staged file is gone and the file is there).
+		adopted := prev.Stage == "placing" && g.outRel == rel
+		if done || adopted {
 			if _, err := os.Stat(filepath.Join(opt.Results, rel)); err == nil {
 				g.outRel = rel
+				if adopted {
+					if g.when.OK {
+						pl.times.set(filepath.Join(opt.Results, rel), g.when.Local())
+					}
+					_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "placed", Path: prev.Path, Year: filepath.Dir(rel), Name: filepath.Base(rel)})
+				}
 				return nil
 			}
 		}
@@ -1784,6 +1803,15 @@ func place(opt Options, g *group, pl *placer, rule names.Rule, journal *state.Jo
 		return journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "placing", Path: filepath.ToSlash(rel)})
 	})
 	if err != nil {
+		// The move did not happen: withdraw the intent, so no later run
+		// takes whatever file ends up at that name for this one.
+		if hadPrev {
+			_ = journal.Put(prev)
+		} else {
+			_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "staged"})
+		}
+	}
+	if err != nil {
 		return err
 	}
 	dest := filepath.Join(opt.Results, rel)
@@ -1794,6 +1822,17 @@ func place(opt Options, g *group, pl *placer, rule names.Rule, journal *state.Jo
 	}
 	_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "placed", Path: filepath.ToSlash(rel), Year: dir, Name: filepath.Base(rel)})
 	return nil
+}
+
+// movedBeforeCrash reports whether a "placing" record's move happened: the
+// staged copy is gone and a file is at the recorded path. If the staged copy
+// is still there, the file at that path, if any, belongs to another group.
+func movedBeforeCrash(results string, rec state.Rec) bool {
+	if _, err := os.Stat(filepath.Join(results, ".takeout", "staging", rec.SHA)); err == nil {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(results, filepath.FromSlash(rec.Path)))
+	return err == nil
 }
 
 func recStage(j *state.Journal, id string) string {
@@ -1843,7 +1882,7 @@ func albumDirs(groups []group, rule names.Rule) (map[string]string, []string) {
 
 func albums(opt Options, groups []group, i int, dirs map[string]string, pl *placer, rule names.Rule, journal *state.Journal) error {
 	g := &groups[i]
-	if g.outRel == "" || g.placeholder || strings.HasPrefix(g.outRel, "not-importable") {
+	if g.outRel == "" || g.placeholder || g.failErr != "" || strings.HasPrefix(g.outRel, "not-importable") {
 		return nil
 	}
 	rec, _ := journal.Get(g.id)
@@ -2194,6 +2233,9 @@ func verifyTags(clients []*exiftool.Client, results string, groups []group, rep 
 		cre, _ := row["CreationDate"].(string)
 		if !strings.Contains(dto+" "+cre, it.day) {
 			rep.TagErrors++
+			if rel, err := filepath.Rel(results, it.path); err == nil {
+				rep.TagErrorPaths = append(rep.TagErrorPaths, filepath.ToSlash(rel))
+			}
 			if len(rep.TagErrorFiles) < maxTagErrorFiles {
 				rel, _ := filepath.Rel(results, it.path)
 				rep.TagErrorFiles = append(rep.TagErrorFiles, TagErrorFile{Path: filepath.ToSlash(rel),
@@ -2423,7 +2465,7 @@ func unzipFile(f *zip.File, root, rel string) error {
 	for n := 1; ; n++ {
 		target := filepath.Join(root, dir, names.WithIndex(file, n))
 		if st, err := os.Stat(target); err == nil {
-			if n == 1 && uint64(st.Size()) == f.UncompressedSize64 {
+			if n == 1 && uint64(st.Size()) == f.UncompressedSize64 && fileCRC(target) == f.CRC32 {
 				return nil // extracted by an earlier, interrupted run
 			}
 			continue
@@ -2443,6 +2485,20 @@ func unzipFile(f *zip.File, root, rel string) error {
 		}
 		return err
 	}
+}
+
+// fileCRC is the CRC32 of a file, or 0 if it cannot be read.
+func fileCRC(p string) uint32 {
+	f, err := os.Open(p)
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+	h := crc32.NewIEEE()
+	if _, err := io.Copy(h, f); err != nil {
+		return 0
+	}
+	return h.Sum32()
 }
 
 func extractTo(f *zip.File, p string) error {
@@ -2500,30 +2556,29 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	if err := json.Unmarshal(b, &rep); err != nil {
 		return ExitReconcile, rep, err
 	}
-	j, err := state.OpenJournal(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
+	recs, err := state.ReadJournal(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
 	if err != nil {
 		return ExitPreflight, rep, err
 	}
-	defer j.Close()
-	raw, err := os.ReadFile(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
-	if err != nil {
-		return ExitPreflight, rep, err
-	}
-	missing := 0
-	for _, line := range strings.Split(string(raw), "\n") {
-		if strings.TrimSpace(line) == "" {
+	// Every file a finished record names, in the library and in albums, must
+	// be on disk. Records of unfinished moves are not checked.
+	var missing []string
+	for _, rec := range recs {
+		if rec.Stage != "placed" && rec.Stage != "cloned" {
 			continue
 		}
-		var rec state.Rec
-		if json.Unmarshal([]byte(line), &rec) != nil || rec.Path == "" {
-			continue
-		}
-		if _, err := os.Stat(filepath.Join(opt.Results, filepath.FromSlash(rec.Path))); err != nil {
-			missing++
+		for _, p := range append([]string{rec.Path}, rec.Albums...) {
+			if p == "" {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(opt.Results, filepath.FromSlash(p))); err != nil {
+				missing = append(missing, p)
+			}
 		}
 	}
-	if missing > 0 {
-		return ExitReconcile, rep, fmt.Errorf("%d journal files are missing", missing)
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		return ExitReconcile, rep, fmt.Errorf("%d files from the journal are missing, for example: %s", len(missing), strings.Join(missing[:min(len(missing), 8)], "; "))
 	}
 	if rep.Failed > 0 {
 		return ExitReconcile, rep, errFailed(rep.Failed, opt.Results)
@@ -2536,6 +2591,9 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	// Files with tag errors are known to lack their date; they are exit 4, not
 	// a wrong year.
 	known := map[string]bool{}
+	for _, p := range rep.TagErrorPaths {
+		known[p] = true
+	}
 	for _, f := range rep.TagErrorFiles {
 		known[filepath.ToSlash(f.Path)] = true
 	}
@@ -2551,7 +2609,6 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 		return ExitReconcile, rep, fmt.Errorf("%d files are in the wrong year folder, for example: %s", len(bad), strings.Join(bad[:n], "; "))
 	}
 	_ = ctx
-	_ = j
 	// Files with tag errors are in the library; the year check above still ran.
 	if rep.TagErrors > 0 {
 		return ExitTagErrors, rep, nil
@@ -2561,12 +2618,6 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 
 // Status prints one line from the journal.
 func Status(results string) string {
-	j, err := state.OpenJournal(filepath.Join(results, ".takeout", "state.jsonl"))
-	if err != nil {
-		return "no run yet"
-	}
-	defer j.Close()
-	// count by reading file
 	b, err := os.ReadFile(filepath.Join(results, ".takeout", "state.jsonl"))
 	if err != nil {
 		return "no run yet"

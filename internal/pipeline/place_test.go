@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"io/fs"
 	"os"
@@ -233,13 +234,16 @@ func TestUnzipNeverReplacesFiles(t *testing.T) {
 	if victim == "" {
 		t.Fatal("lonely.jpg not unzipped")
 	}
-	if err := os.WriteFile(victim, []byte("the user's own edit"), 0o644); err != nil {
+	// Same size as the zip's file, different bytes: still not the zip's copy.
+	orig, _ := os.ReadFile(victim)
+	edit := bytes.Repeat([]byte("e"), len(orig))
+	if err := os.WriteFile(victim, edit, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := unzipAll(context.Background(), zips, dest); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(victim); string(b) != "the user's own edit" {
+	if b, _ := os.ReadFile(victim); !bytes.Equal(b, edit) {
 		t.Fatal("unzip replaced an existing file")
 	}
 	if _, err := os.Stat(strings.TrimSuffix(victim, ".jpg") + " (2).jpg"); err != nil {

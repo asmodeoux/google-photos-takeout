@@ -331,3 +331,38 @@ func TestRerunReportsTheSameCounts(t *testing.T) {
 		t.Fatalf("first %+v\nrerun %+v", c(first), c(second))
 	}
 }
+
+// A "placing" record whose move never happened must not take over the file
+// another photo later put at that name.
+func TestPlacingIntentNeverTakesAnotherPhotosFile(t *testing.T) {
+	requireTools(t, "exiftool")
+	dir := t.TempDir()
+	tk := testgen.New()
+	tk.Photo(1, "Photos from 2019", "IMG.jpg", testgen.JPEG(1), &testgen.Side{Taken: time.Date(2019, 3, 1, 9, 0, 0, 0, time.UTC)})
+	tk.Photo(1, "Trip", "IMG.jpg", testgen.JPEG(2), &testgen.Side{Taken: time.Date(2019, 7, 1, 9, 0, 0, 0, time.UTC)})
+	arch := filepath.Join(dir, "archives")
+	if _, err := tk.Write(arch); err != nil {
+		t.Fatal(err)
+	}
+	results := filepath.Join(dir, "results")
+	runOK(t, arch, results)
+	before := snapshot(t, results)
+	x := lastRecord(t, results, "2019/IMG (2).jpg")
+	// X's move to "IMG.jpg" was intended but did not happen: its file is still
+	// staged, and the other photo holds that name.
+	staging := filepath.Join(results, ".takeout", "staging")
+	os.MkdirAll(staging, 0o755)
+	if err := os.Rename(filepath.Join(results, "2019", "IMG (2).jpg"), filepath.Join(staging, x.SHA)); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range x.Albums {
+		os.Remove(filepath.Join(results, filepath.FromSlash(a)))
+	}
+	appendRecord(t, results, state.Rec{ID: x.ID, SHA: x.SHA, Stage: "placing", Path: "2019/IMG.jpg"})
+	runOK(t, arch, results)
+	after := snapshot(t, results)
+	sameFiles(t, before, after)
+	if after["2019/IMG.jpg"] != before["2019/IMG.jpg"] {
+		t.Fatal("the other photo's file was rewritten")
+	}
+}
