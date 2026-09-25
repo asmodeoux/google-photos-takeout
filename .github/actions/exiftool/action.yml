@@ -1,0 +1,30 @@
+name: Install pinned ExifTool
+description: Downloads ExifTool EXIFTOOL_VERSION, checks its SHA-256, and puts it on PATH.
+runs:
+  using: composite
+  steps:
+    - name: ExifTool (macOS, Linux)
+      if: runner.os != 'Windows'
+      shell: bash
+      run: |
+        set -eu
+        f="Image-ExifTool-${EXIFTOOL_VERSION}.tar.gz"
+        curl -fsSL -o "$RUNNER_TEMP/$f" "https://sourceforge.net/projects/exiftool/files/$f/download"
+        echo "${EXIFTOOL_TAR_SHA256}  $RUNNER_TEMP/$f" | shasum -a 256 -c -
+        tar xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP"
+        echo "$RUNNER_TEMP/Image-ExifTool-${EXIFTOOL_VERSION}" >> "$GITHUB_PATH"
+    - name: ExifTool (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: |
+        $f = Join-Path $env:RUNNER_TEMP "exiftool-$env:EXIFTOOL_VERSION`_64.zip"
+        Invoke-WebRequest -Uri "https://sourceforge.net/projects/exiftool/files/exiftool-$env:EXIFTOOL_VERSION`_64.zip/download" -OutFile $f -UserAgent "curl"
+        $hash = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+        if ($hash -ne $env:EXIFTOOL_WIN_SHA256) { throw "ExifTool hash $hash does not match" }
+        $dest = Join-Path $env:RUNNER_TEMP "exiftool"
+        Expand-Archive $f -DestinationPath $dest
+        $dir = (Get-ChildItem $dest -Directory | Select-Object -First 1).FullName
+        if (-not $dir) { $dir = $dest }
+        Rename-Item (Join-Path $dir "exiftool(-k).exe") "exiftool.exe"
+        if (-not (Test-Path (Join-Path $dir "exiftool_files"))) { throw "exiftool_files missing next to exiftool.exe" }
+        Add-Content $env:GITHUB_PATH $dir

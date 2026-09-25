@@ -19,7 +19,11 @@ const (
 	SrcLive     = "live"
 	SrcEmbedded = "embedded"
 	SrcFilename = "filename"
-	SrcUnknown  = "unknown"
+	// SrcFilenameDate is a name with a day but no time, such as WhatsApp's
+	// IMG-20170203-WA0026.jpg. The time is set to 12:00 so no timezone moves
+	// the photo to another day.
+	SrcFilenameDate = "filename-date"
+	SrcUnknown      = "unknown"
 
 	TZGPS      = "gps"
 	TZEmbedded = "embedded-offset"
@@ -118,12 +122,23 @@ func InBounds(t time.Time, now time.Time) bool {
 	return !u.Before(start) && !u.After(end)
 }
 
+// TakenInBounds accepts a sidecar photoTakenTime from 1800 on. Google stores
+// the date a user set on a scanned photo there, so it can be long before any
+// camera. Unix time 0 means Google had no date.
+func TakenInBounds(t time.Time, now time.Time) bool {
+	if t.IsZero() || t.Unix() == 0 {
+		return false
+	}
+	u := t.UTC()
+	return !u.Before(time.Date(1800, 1, 1, 0, 0, 0, 0, time.UTC)) && !u.After(now.UTC().Add(24*time.Hour))
+}
+
 // FromSidecar applies GPS, an embedded offset, and the camera-clock minus JSON UTC.
 // Neighbor, default, and UTC are filled in later by ResolveChain.
 func FromSidecar(sc Sidecar, emb Embedded, now time.Time) When {
 	var instant time.Time
 	src := ""
-	if sc.Taken != nil && InBounds(*sc.Taken, now) {
+	if sc.Taken != nil && TakenInBounds(*sc.Taken, now) {
 		instant = sc.Taken.UTC()
 		src = SrcTaken
 	} else if sc.Creation != nil && InBounds(*sc.Creation, now) {
@@ -234,7 +249,10 @@ func ApplyFallback(files []When, defaultTZ string) {
 	}
 	for i := range files {
 		w := &files[i]
-		if !w.OK || w.OffsetKnown || w.Source == SrcFilename || w.Source == SrcUnknown || w.Source == "" {
+		// A wall clock with no zone (a file name, or a camera date without an
+		// offset) is stored as if it were UTC. Adding an offset here would
+		// move it; it stays a wall clock, and videos pin it with PinWallClock.
+		if !w.OK || w.OffsetKnown || w.TZStep == TZFilename || w.Source == SrcFilename || w.Source == SrcFilenameDate || w.Source == SrcUnknown || w.Source == "" {
 			continue
 		}
 		best := time.Duration(1 << 62)
@@ -280,6 +298,30 @@ func ApplyFallback(files []When, defaultTZ string) {
 		w.TZStep = TZUTC
 		w.Year = w.Instant.UTC().Year()
 	}
+}
+
+// PinWallClock gives a date with no known offset the offset of defaultTZ (UTC
+// when empty or invalid) at the same wall-clock time. Videos need it: their
+// creation date must carry a zone, and without one ExifTool would use the
+// computer's zone.
+func PinWallClock(w *When, defaultTZ string) {
+	if !w.OK || w.OffsetKnown {
+		return
+	}
+	wall := w.Instant.UTC()
+	loc, step := time.UTC, TZUTC
+	if defaultTZ != "" {
+		if l, err := time.LoadLocation(defaultTZ); err == nil {
+			loc, step = l, TZDefault
+		}
+	}
+	t := time.Date(wall.Year(), wall.Month(), wall.Day(), wall.Hour(), wall.Minute(), wall.Second(), wall.Nanosecond(), loc)
+	_, s := t.Zone()
+	w.Instant = t
+	w.Offset = time.Duration(s) * time.Second
+	w.OffsetKnown = true
+	w.TZStep = step
+	w.Year = wall.Year()
 }
 
 var patterns = []*regexp.Regexp{
@@ -335,6 +377,36 @@ func FromFilename(name string, now time.Time) When {
 				return When{Instant: t, OK: true, Year: t.Year(), Source: SrcFilename, TZStep: TZFilename, OffsetKnown: false}
 			}
 		}
+	}
+	return fromDateOnlyName(base, now)
+}
+
+// dateOnly are names that carry a day but no time. Each must anchor at the
+// start of the name, so hex IDs and UUIDs never match.
+var dateOnly = []struct {
+	re     *regexp.Regexp
+	layout string
+}{
+	{regexp.MustCompile(`^(?:IMG|VID|AUD|PTT|STK)-((?:19|20)\d{6})-WA\d+`), "20060102"},
+	{regexp.MustCompile(`^((?:19|20)\d{2}-[01]\d-[0-3]\d)[_ ]`), "2006-01-02"},
+	{regexp.MustCompile(`^((?:19|20)\d{2}[01]\d[0-3]\d)_[^\d]`), "20060102"},
+}
+
+func fromDateOnlyName(base string, now time.Time) When {
+	for _, d := range dateOnly {
+		m := d.re.FindStringSubmatch(base)
+		if m == nil {
+			continue
+		}
+		day, err := time.ParseInLocation(d.layout, m[1], time.UTC)
+		if err != nil {
+			continue
+		}
+		t := day.Add(12 * time.Hour)
+		if !InBounds(t, now) {
+			continue
+		}
+		return When{Instant: t, OK: true, Year: t.Year(), Source: SrcFilenameDate, TZStep: TZFilename}
 	}
 	return When{}
 }

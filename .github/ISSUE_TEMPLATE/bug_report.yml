@@ -7,21 +7,22 @@ body:
     id: version
     attributes:
       label: takeout --version
-      description: Output of `./takeout version`.
+      description: Output of `./takeout version` (Windows `.\takeout.exe version`).
     validations:
       required: true
   - type: input
     id: os
     attributes:
-      label: Operating system
-      placeholder: macOS 15, Apple silicon
+      label: Operating system and results disk
+      placeholder: Windows 11, results on an exFAT USB disk
     validations:
       required: true
-  - type: input
-    id: exiftool
+  - type: textarea
+    id: doctor
     attributes:
-      label: ExifTool version
-      description: Output of `exiftool -ver`.
+      label: takeout doctor
+      description: Output of `./takeout doctor` (Windows `.\takeout.exe doctor`). It shows tool versions and folders, never photo names. Edit your user name out of the paths if you like.
+      render: text
     validations:
       required: true
   - type: textarea

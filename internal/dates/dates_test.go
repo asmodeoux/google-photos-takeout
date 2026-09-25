@@ -114,3 +114,88 @@ func TestOutOfRangeJSON(t *testing.T) {
 }
 
 func ptr(t time.Time) *time.Time { return &t }
+
+func TestFromFilenameDateOnly(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cases := map[string]string{
+		"IMG-20170203-WA0026.jpg":                             "2017-02-03 12:00",
+		"VID-20180101-WA0001.mp4":                             "2018-01-01 12:00",
+		"2022-04-21_640fea6c-bb0a-cf02-951c-00d09ac2d3cc.jpg": "2022-04-21 12:00",
+		"2021-12-31 party.jpg":                                "2021-12-31 12:00",
+		"20200615_beach.jpg":                                  "2020-06-15 12:00",
+	}
+	for name, want := range cases {
+		w := FromFilename(name, now)
+		if !w.OK || w.Source != SrcFilenameDate || w.Instant.Format("2006-01-02 15:04") != want || w.OffsetKnown {
+			t.Errorf("%s: %+v", name, w)
+		}
+	}
+	for _, name := range []string{
+		"0bca7b90-299e-4000-b29a-d97037b18456.jpg", "20200615_101010.jpg" + "x", "2022-13-45_x.jpg",
+		"IMG-99990101-WA0001.jpg", "photo-2022-04-21.jpg", "20200615123.jpg",
+	} {
+		w := FromFilename(name, now)
+		if w.OK && w.Source == SrcFilenameDate {
+			t.Errorf("%s matched as date-only: %+v", name, w)
+		}
+	}
+	// A full timestamp still wins over the date-only rule.
+	if w := FromFilename("20200615_101010.jpg", now); w.Source != SrcFilename {
+		t.Fatalf("full timestamp: %+v", w)
+	}
+}
+
+func TestPinWallClockKeepsWallClock(t *testing.T) {
+	w := FromFilename("VID_20190914_160000.mp4", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	if !w.OK || w.OffsetKnown {
+		t.Fatalf("want a floating filename date, got %+v", w)
+	}
+	PinWallClock(&w, "Europe/Berlin")
+	if !w.OffsetKnown || w.Offset != 2*time.Hour || w.TZStep != TZDefault {
+		t.Fatalf("offset %v known %v step %s", w.Offset, w.OffsetKnown, w.TZStep)
+	}
+	if got := w.Local().Format("2006-01-02 15:04"); got != "2019-09-14 16:00" {
+		t.Fatalf("wall clock %s", got)
+	}
+	if got := w.Instant.UTC().Format("15:04"); got != "14:00" {
+		t.Fatalf("instant %s", got)
+	}
+	u := FromFilename("VID_20190914_160000.mp4", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	PinWallClock(&u, "")
+	if u.TZStep != TZUTC || u.Offset != 0 || u.Local().Hour() != 16 {
+		t.Fatalf("UTC fallback %+v", u)
+	}
+}
+
+func TestTakenInBoundsAcceptsOldScans(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if !TakenInBounds(time.Date(1965, 6, 1, 12, 0, 0, 0, time.UTC), now) {
+		t.Error("1965 rejected")
+	}
+	if TakenInBounds(time.Unix(0, 0), now) {
+		t.Error("Unix time 0 accepted")
+	}
+	if TakenInBounds(time.Date(1799, 12, 31, 0, 0, 0, 0, time.UTC), now) {
+		t.Error("1799 accepted")
+	}
+	if InBounds(time.Date(1965, 6, 1, 12, 0, 0, 0, time.UTC), now) {
+		t.Error("InBounds must still reject 1965 for file names and camera clocks")
+	}
+}
+
+// A camera date with no offset is a wall clock. The fallback zone must not
+// shift it into the next year.
+func TestFallbackKeepsEmbeddedWallClock(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	dto := time.Date(2019, 12, 31, 23, 30, 0, 0, time.UTC)
+	w := FromEmbedded(Embedded{DTO: &dto, HasDTO: true}, now)
+	ws := []When{w}
+	ApplyFallback(ws, "Europe/Moscow")
+	if ws[0].Year != 2019 || ws[0].Local().Format("2006-01-02 15:04") != "2019-12-31 23:30" {
+		t.Fatalf("year %d local %s", ws[0].Year, ws[0].Local())
+	}
+	PinWallClock(&ws[0], "Europe/Moscow")
+	if got := ws[0].Local().Format("2006-01-02 15:04 -07:00"); got != "2019-12-31 23:30 +03:00" {
+		t.Fatalf("pinned %s", got)
+	}
+}

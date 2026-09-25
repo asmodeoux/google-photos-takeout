@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -34,15 +36,25 @@ type Entry struct {
 	Size      uint64
 	CRC32     uint32
 	JSON      bool
+	// System is an operating-system file such as ._x.jpg or .DS_Store, or an
+	// entry under __MACOSX/, which appear when a Takeout is re-zipped on a Mac.
+	System bool
+	// Symlink is a zip entry stored as a symbolic link. It is never created.
+	Symlink bool
 }
 
 // Index is the merged view of every zip.
 type Index struct {
-	Entries    []Entry
-	Zips       []ZipInfo
-	ExportIDs  []string
-	Missing    []int
-	PartPrefix string
+	Entries   []Entry
+	Zips      []ZipInfo
+	ExportIDs []string
+	Missing   []int
+	// MissingByExport lists missing part numbers for each export ID.
+	MissingByExport map[string][]int
+	PartPrefix      string
+	// FallbackRoot is set when no known "Google Photos" folder name was found
+	// and the export's photo folder was recognized by its contents instead.
+	FallbackRoot string
 }
 
 // ZipInfo describes one archive part.
@@ -69,13 +81,14 @@ var (
 		"Google Kuvat": true, "Google Fotók": true, "Google Fotoğraflar": true,
 		"Google フォト": true, "Google 포토": true, "Google 相片": true, "Google 照片": true,
 	}
-	partRe = regexp.MustCompile(`takeout-(\d{8}T\d{6}Z).*?-(\d+)\.zip$`)
+	partRe = regexp.MustCompile(`(?i)takeout-(\d{8}T\d{6}Z).*?-(\d+)\.zip$`)
 )
 
 // Open reads central directories only. File bodies are not hashed or CRC-checked here.
 func Open(paths []string) (*Index, error) {
 	idx := &Index{}
 	parts := map[string]map[int]bool{}
+	var others []Entry // entries under a Takeout folder we did not recognize
 	for _, p := range paths {
 		zr, err := zip.OpenReader(p)
 		if err != nil {
@@ -102,6 +115,10 @@ func Open(paths []string) (*Index, error) {
 			}
 			rel, baseName, ok := splitGooglePhotos(name)
 			if !ok {
+				if strings.HasPrefix(name, "Takeout/") && strings.Count(name, "/") >= 2 {
+					others = append(others, Entry{ZipPath: p, EntryName: name, Size: f.UncompressedSize64, CRC32: f.CRC32,
+						System: IsSystemFile(name), Symlink: f.Mode()&fs.ModeSymlink != 0})
+				}
 				continue
 			}
 			e := Entry{
@@ -112,6 +129,8 @@ func Open(paths []string) (*Index, error) {
 				Size:      f.UncompressedSize64,
 				CRC32:     f.CRC32,
 				JSON:      strings.HasSuffix(strings.ToLower(baseName), ".json"),
+				System:    IsSystemFile(name),
+				Symlink:   f.Mode()&fs.ModeSymlink != 0,
 			}
 			idx.Entries = append(idx.Entries, e)
 			info.Files++
@@ -119,12 +138,17 @@ func Open(paths []string) (*Index, error) {
 		zr.Close()
 		idx.Zips = append(idx.Zips, info)
 	}
-	seen := map[string]bool{}
-	for id, set := range parts {
-		if !seen[id] {
-			seen[id] = true
-			idx.ExportIDs = append(idx.ExportIDs, id)
-		}
+	if len(idx.Entries) == 0 && len(others) > 0 {
+		idx.useFallbackRoot(others)
+	}
+	ids := make([]string, 0, len(parts))
+	for id := range parts {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		set := parts[id]
+		idx.ExportIDs = append(idx.ExportIDs, id)
 		max := 0
 		for n := range set {
 			if n > max {
@@ -134,10 +158,97 @@ func Open(paths []string) (*Index, error) {
 		for n := 1; n <= max; n++ {
 			if !set[n] {
 				idx.Missing = append(idx.Missing, n)
+				if idx.MissingByExport == nil {
+					idx.MissingByExport = map[string][]int{}
+				}
+				idx.MissingByExport[id] = append(idx.MissingByExport[id], n)
 			}
 		}
 	}
 	return idx, nil
+}
+
+// useFallbackRoot handles an export whose photo folder has a name we do not
+// know, for example in a language not listed in gpNames. It picks the one
+// top folder under Takeout/ that holds both media and JSON sidecars. Year
+// folders there are recognized by a four-digit year before or after a word.
+func (idx *Index) useFallbackRoot(others []Entry) {
+	media, sidecars := map[string]int{}, map[string]int{}
+	for _, e := range others {
+		root := strings.SplitN(e.EntryName, "/", 3)[1]
+		if strings.HasSuffix(strings.ToLower(e.EntryName), ".json") {
+			sidecars[root]++
+		} else {
+			media[root]++
+		}
+	}
+	var roots []string
+	for r := range media {
+		if sidecars[r] > 0 {
+			roots = append(roots, r)
+		}
+	}
+	if len(roots) != 1 {
+		return
+	}
+	root := roots[0]
+	idx.FallbackRoot = root
+	for _, e := range others {
+		parts := strings.Split(e.EntryName, "/")
+		if parts[1] != root || len(parts) < 3 {
+			continue
+		}
+		folder, name := "", parts[len(parts)-1]
+		if len(parts) > 3 {
+			folder = NormFolder(parts[2])
+			if y := genericYear(folder); y != "" {
+				folder = "Photos from " + y
+			}
+		}
+		if name == "" {
+			continue
+		}
+		e.RelFolder = folder
+		e.Name = name
+		e.JSON = strings.HasSuffix(strings.ToLower(name), ".json")
+		idx.Entries = append(idx.Entries, e)
+	}
+}
+
+var genericYearRe = regexp.MustCompile(`^(?:\p{L}[\p{L}' ]*[ _-])?((?:18|19|20)\d{2})(?:[ _-][\p{L}' ]*\p{L})?$`)
+
+// genericYear returns the year of a folder named like "<word> 2019" or
+// "2019 <word>" in any language, or "".
+func genericYear(folder string) string {
+	m := genericYearRe.FindStringSubmatch(folder)
+	if m == nil || !yearNum(m[1]) {
+		return ""
+	}
+	return m[1]
+}
+
+// IsSystemFile reports files an operating system adds next to photos:
+// macOS AppleDouble "._" files, .DS_Store, anything under __MACOSX/, and
+// Windows Thumbs.db and desktop.ini.
+func IsSystemFile(name string) bool {
+	for _, seg := range strings.Split(name, "/") {
+		if seg == "__MACOSX" {
+			return true
+		}
+	}
+	return IsSystemName(path.Base(name))
+}
+
+// IsSystemName is IsSystemFile for a single file name.
+func IsSystemName(base string) bool {
+	if strings.HasPrefix(base, "._") {
+		return true
+	}
+	switch strings.ToLower(base) {
+	case ".ds_store", "thumbs.db", "desktop.ini":
+		return true
+	}
+	return false
 }
 
 // CheckPath rejects absolute paths and ".." segments (zip slip).
@@ -187,16 +298,36 @@ func Classify(folder string) FolderClass {
 	if folder == "" {
 		return ClassLibrary
 	}
-	switch strings.ToLower(folder) {
-	case "trash", "bin", "papierkorb", "corbeille":
+	lower := strings.ToLower(folder)
+	if trashNames[lower] {
 		return ClassTrash
-	case "archive", "locked folder", "failed videos":
+	}
+	if libraryNames[lower] {
 		return ClassLibrary
 	}
 	if isYear(folder) {
 		return ClassLibrary
 	}
 	return ClassAlbum
+}
+
+// trashNames are Google Photos' Trash folder in the export languages takeout
+// knows. In an export in another language the Trash folder looks like an
+// album; --include-trash is then the default behavior for it.
+var trashNames = map[string]bool{
+	"trash": true, "bin": true, "papierkorb": true, "corbeille": true, "papelera": true,
+	"cestino": true, "lixeira": true, "lixo": true, "prullenbak": true, "kosz": true,
+	"корзина": true, "кошик": true, "koš": true, "papperskorg": true, "papirkurv": true,
+	"roskakori": true, "çöp kutusu": true, "kuka": true, "ゴミ箱": true, "휴지통": true,
+	"垃圾桶": true, "回收站": true, "垃圾箱": true,
+}
+
+// libraryNames are folders that hold library photos rather than an album:
+// Archive (in the known languages), Locked Folder, and Failed Videos.
+var libraryNames = map[string]bool{
+	"archive": true, "locked folder": true, "failed videos": true,
+	"archiv": true, "archives": true, "archivo": true, "archivio": true, "arquivo": true,
+	"archief": true, "archiwum": true, "архив": true, "архів": true, "アーカイブ": true, "보관함": true,
 }
 
 func isYear(name string) bool {
@@ -235,7 +366,10 @@ func IsSkippedJSON(name string) bool {
 	return false
 }
 
-// Sniff returns jpeg, png, gif, webp, heic, mov, mp4, webm, or unknown.
+// Sniff returns jpeg, png, gif, webp, heic, mov, mp4, webm, tiff, raw, cr3,
+// avi, mpg, wmv, bmp, or unknown. tiff covers TIFF-based camera RAW such as
+// DNG, CR2, NEF and ARW; raw is a RAW format with its own header (ORF, RW2,
+// RAF); cr3 is Canon's ISO-BMFF RAW, which must not be mistaken for a video.
 func Sniff(b []byte) string {
 	if len(b) >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff {
 		return "jpeg"
@@ -249,12 +383,38 @@ func Sniff(b []byte) string {
 	if len(b) >= 12 && bytes.Equal(b[:4], []byte("RIFF")) && bytes.Equal(b[8:12], []byte("WEBP")) {
 		return "webp"
 	}
+	if len(b) >= 12 && bytes.Equal(b[:4], []byte("RIFF")) && bytes.Equal(b[8:12], []byte("AVI ")) {
+		return "avi"
+	}
+	if len(b) >= 4 && bytes.Equal(b[:4], []byte{0, 0, 1, 0xba}) {
+		return "mpg"
+	}
+	if len(b) >= 4 && bytes.Equal(b[:4], []byte{0x30, 0x26, 0xb2, 0x75}) {
+		return "wmv"
+	}
+	if len(b) >= 2 && b[0] == 'B' && b[1] == 'M' && len(b) >= 14 && b[6] == 0 && b[7] == 0 && b[8] == 0 && b[9] == 0 {
+		return "bmp"
+	}
 	if len(b) >= 4 && b[0] == 0x1a && b[1] == 0x45 && b[2] == 0xdf && b[3] == 0xa3 {
 		return "webm"
+	}
+	if len(b) >= 4 && (bytes.Equal(b[:4], []byte("II*\x00")) || bytes.Equal(b[:4], []byte("MM\x00*"))) {
+		return "tiff"
+	}
+	if len(b) >= 4 {
+		switch string(b[:4]) {
+		case "IIRO", "IIRS", "MMOR", "IIU\x00":
+			return "raw"
+		}
+	}
+	if len(b) >= 15 && string(b[:15]) == "FUJIFILMCCD-RAW" {
+		return "raw"
 	}
 	if len(b) >= 12 && bytes.Equal(b[4:8], []byte("ftyp")) {
 		brand := string(b[8:12])
 		switch brand {
+		case "crx ":
+			return "cr3"
 		case "heic", "heix", "hevc", "hevx", "mif1", "msf1", "heim", "heis":
 			return "heic"
 		case "qt  ":

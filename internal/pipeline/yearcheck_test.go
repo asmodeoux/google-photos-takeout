@@ -23,7 +23,7 @@ func TestYearFoldersMatchDates(t *testing.T) {
 	if root == "" {
 		t.Skip("set TAKEOUT_RESULTS to check a library")
 	}
-	bad, err := YearMismatches(root)
+	bad, err := yearMismatchesForTest(t, root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,4 +34,14 @@ func TestYearFoldersMatchDates(t *testing.T) {
 		}
 		t.Fatalf("%d files are in the wrong year folder:\n%s", len(bad), strings.Join(bad[:n], "\n"))
 	}
+}
+
+func yearMismatchesForTest(t *testing.T, root string) ([]string, error) {
+	t.Helper()
+	clients, err := startClients("", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeClients(clients)
+	return YearMismatches(clients, root, nil)
 }

@@ -1,0 +1,285 @@
+package pipeline
+
+import (
+	"bytes"
+	"context"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/asmodeoux/google-photos-takeout/internal/names"
+	"github.com/asmodeoux/google-photos-takeout/internal/state"
+	"github.com/asmodeoux/google-photos-takeout/internal/testgen"
+	"github.com/asmodeoux/google-photos-takeout/internal/zipindex"
+)
+
+func openTestJournal(t *testing.T, results string) *state.Journal {
+	t.Helper()
+	j, err := state.OpenJournal(filepath.Join(results, ".takeout", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { j.Close() })
+	return j
+}
+
+func write(t *testing.T, p, body string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPlacerNeverOverwritesOnResume(t *testing.T) {
+	results := t.TempDir()
+	write(t, filepath.Join(results, "2019", "x.jpg"), "first")
+	write(t, filepath.Join(results, "2019", "x (2).jpg"), "second")
+	pl := newPlacer(results, openTestJournal(t, results))
+	src := filepath.Join(results, "staged")
+	write(t, src, "third")
+	rel, err := pl.moveInto(src, "2019", "x.jpg", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rel != filepath.Join("2019", "x (3).jpg") {
+		t.Fatalf("rel %s", rel)
+	}
+	for name, want := range map[string]string{"x.jpg": "first", "x (2).jpg": "second", "x (3).jpg": "third"} {
+		b, _ := os.ReadFile(filepath.Join(results, "2019", name))
+		if string(b) != want {
+			t.Fatalf("%s = %q, want %q", name, b, want)
+		}
+	}
+}
+
+func TestPlacerSeedsFromJournalIgnoringCase(t *testing.T) {
+	results := t.TempDir()
+	j := openTestJournal(t, results)
+	j.Put(state.Rec{ID: "a", Stage: "cloned", Path: "2019/IMG.jpg", Albums: []string{"albums/Trip/IMG.jpg"}})
+	write(t, filepath.Join(results, "2019", "IMG.jpg"), "a")
+	write(t, filepath.Join(results, "albums", "Trip", "IMG.jpg"), "a")
+	// A journal name whose file was never made (crash before the move) is free.
+	j.Put(state.Rec{ID: "b", Stage: "placing", Path: "2019/gone.jpg"})
+	pl := newPlacer(results, j)
+	if got := pl.pick("2019", "gone.jpg", ""); got != filepath.Join("2019", "gone.jpg") {
+		t.Fatalf("unmade journal name was reserved: %s", got)
+	}
+	if got := pl.pick("2019", "img.JPG", ""); got != filepath.Join("2019", "img (2).JPG") {
+		t.Fatalf("library pick %s", got)
+	}
+	if got := pl.pick(filepath.Join("albums", "Trip"), "IMG.jpg", ""); got != filepath.Join("albums", "Trip", "IMG (2).jpg") {
+		t.Fatalf("album pick %s", got)
+	}
+}
+
+func TestPlacerKeepsPairNumbersTogether(t *testing.T) {
+	results := t.TempDir()
+	write(t, filepath.Join(results, "2020", "IMG_1.heic"), "other")
+	pl := newPlacer(results, openTestJournal(t, results))
+	still := pl.pick("2020", "IMG_1.heic", "pair1")
+	pl.take(still)
+	video := pl.pick("2020", "IMG_1.MOV", "pair1")
+	if still != filepath.Join("2020", "IMG_1 (2).heic") || video != filepath.Join("2020", "IMG_1 (2).MOV") {
+		t.Fatalf("still %s video %s", still, video)
+	}
+}
+
+func TestAlbumDirsCollisions(t *testing.T) {
+	mk := func(folder string) group {
+		return group{members: []member{{Entry: zipindex.Entry{RelFolder: folder, Name: "a.jpg"}}}}
+	}
+	groups := []group{mk("Trip"), mk("trip"), mk("A?"), mk("A*"), mk("CON"), mk("Plain")}
+	dirs, renames := albumDirs(groups, names.Portable)
+	want := map[string]string{"A*": "A-", "A?": "A- (2)", "Trip": "Trip", "trip": "trip (2)", "CON": "CON_", "Plain": "Plain"}
+	for k, v := range want {
+		if dirs[k] != v {
+			t.Errorf("%s -> %q, want %q", k, dirs[k], v)
+		}
+	}
+	if len(renames) != 4 {
+		t.Fatalf("renames %v", renames)
+	}
+	// A suffixed name must not land on another album that already has it.
+	three, _ := albumDirs([]group{mk("Trip"), mk("trip"), mk("Trip (2)"), mk("Trip.2019"), mk("trip.2019")}, names.Portable)
+	seenKeys := map[string]string{}
+	for f, d := range three {
+		if other, dup := seenKeys[names.Key(d)]; dup {
+			t.Fatalf("albums %q and %q share folder %q", f, other, d)
+		}
+		seenKeys[names.Key(d)] = f
+	}
+	if three["trip.2019"] != "trip.2019 (2)" {
+		t.Errorf("dotted album name got %q", three["trip.2019"])
+	}
+	long := strings.Repeat("é", 127) + "x"
+	for _, d := range func() map[string]string {
+		m, _ := albumDirs([]group{mk(long), mk(strings.ToUpper(long))}, names.Portable)
+		return m
+	}() {
+		if len(d) > 255 {
+			t.Errorf("folder name of %d bytes", len(d))
+		}
+	}
+	apple, _ := albumDirs(groups, names.Apple)
+	if apple["A?"] != "A?" || apple["trip"] != "trip (2)" {
+		t.Fatalf("apple %v", apple)
+	}
+}
+
+func TestAlbumFilesThatCollideAreAllKept(t *testing.T) {
+	results := t.TempDir()
+	j := openTestJournal(t, results)
+	pl := newPlacer(results, j)
+	var groups []group
+	for i, name := range []string{"a?.jpg", "a*.jpg"} {
+		lib := filepath.Join("2019", "lib"+string(rune('0'+i))+".jpg")
+		write(t, filepath.Join(results, lib), name)
+		groups = append(groups, group{
+			id: name, outRel: lib, trueType: "jpeg",
+			members: []member{{Entry: zipindex.Entry{RelFolder: "Trip", Name: name}}},
+		})
+	}
+	dirs, _ := albumDirs(groups, names.Portable)
+	for i := range groups {
+		if err := albums(Options{Results: results, Albums: "copy"}, groups, i, dirs, pl, names.Portable, j); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, want := range map[string]string{"a-.jpg": "a?.jpg", "a- (2).jpg": "a*.jpg"} {
+		b, err := os.ReadFile(filepath.Join(results, "albums", "Trip", name))
+		if err != nil || string(b) != want {
+			t.Fatalf("%s: %q %v", name, b, err)
+		}
+	}
+	rec, _ := j.Get("a*.jpg")
+	if rec.Stage != "cloned" || len(rec.Albums) != 1 || strings.Contains(rec.Albums[0], `\`) {
+		t.Fatalf("journal %+v", rec)
+	}
+}
+
+func TestUnzipRelPortableAndUnique(t *testing.T) {
+	taken := map[string]bool{}
+	a := unzipRel("Takeout/Google Photos/Trip?/a?.jpg", "file", taken)
+	b := unzipRel("Takeout/Google Photos/Trip*/a*.jpg", "file", taken)
+	c := unzipRel("Takeout/Google Photos/CON/CON.jpg", "file", taken)
+	if a != filepath.FromSlash("Takeout/Google Photos/Trip-/a-.jpg") || b != filepath.FromSlash("Takeout/Google Photos/Trip-/a- (2).jpg") {
+		t.Fatalf("%s %s", a, b)
+	}
+	if c != filepath.FromSlash("Takeout/Google Photos/CON_/CON_.jpg") {
+		t.Fatal(c)
+	}
+}
+
+func TestUnzipSkipsSymlinksAndSystemFiles(t *testing.T) {
+	dir := t.TempDir()
+	zips, err := testgen.Corpus().Write(filepath.Join(dir, "archives"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "unzipped")
+	if err := unzipAll(context.Background(), zips, dest); err != nil {
+		t.Fatal(err)
+	}
+	var files int
+	err = filepath.WalkDir(dest, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			t.Errorf("symlink created: %s", p)
+		}
+		if d.Name() == "__MACOSX" || (!d.IsDir() && zipindex.IsSystemName(d.Name())) {
+			t.Errorf("system file unzipped: %s", p)
+		}
+		if !d.IsDir() {
+			files++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files == 0 {
+		t.Fatal("nothing unzipped")
+	}
+}
+
+func TestUnzipNeverReplacesFiles(t *testing.T) {
+	dir := t.TempDir()
+	zips, err := testgen.Corpus().Write(filepath.Join(dir, "archives"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "unzipped")
+	if err := unzipAll(context.Background(), zips, dest); err != nil {
+		t.Fatal(err)
+	}
+	first := snapshot(t, dest)
+
+	// Interrupted before .complete was written: the rerun keeps what is there.
+	for _, z := range zips {
+		os.Remove(filepath.Join(dest, strings.TrimSuffix(filepath.Base(z), ".zip"), ".complete"))
+	}
+	var victim string
+	for rel := range first {
+		if strings.HasSuffix(rel, "/lonely.jpg") {
+			victim = filepath.Join(dest, filepath.FromSlash(rel))
+		}
+	}
+	if victim == "" {
+		t.Fatal("lonely.jpg not unzipped")
+	}
+	// Same size as the zip's file, different bytes: still not the zip's copy.
+	orig, _ := os.ReadFile(victim)
+	edit := bytes.Repeat([]byte("e"), len(orig))
+	if err := os.WriteFile(victim, edit, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := unzipAll(context.Background(), zips, dest); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(victim); !bytes.Equal(b, edit) {
+		t.Fatal("unzip replaced an existing file")
+	}
+	if _, err := os.Stat(strings.TrimSuffix(victim, ".jpg") + " (2).jpg"); err != nil {
+		t.Fatalf("the zip's copy should sit next to it as (2): %v", err)
+	}
+	after := snapshot(t, dest)
+	if len(after) != len(first)+1 {
+		t.Fatalf("files: %d before, %d after (want one more)", len(first), len(after))
+	}
+	// Interrupted again: the " (2)" copy made last time is kept, not made a third time.
+	for _, z := range zips {
+		os.Remove(filepath.Join(dest, strings.TrimSuffix(filepath.Base(z), ".zip"), ".complete"))
+	}
+	if err := unzipAll(context.Background(), zips, dest); err != nil {
+		t.Fatal(err)
+	}
+	if again := snapshot(t, dest); len(again) != len(after) {
+		t.Fatalf("files: %d, then %d after another resume", len(after), len(again))
+	}
+	for rel := range after {
+		if strings.HasSuffix(rel, ".partial") {
+			t.Errorf("leftover %s", rel)
+		}
+	}
+}
+
+func TestUnzipDestStaysOutsideArchives(t *testing.T) {
+	dir := t.TempDir()
+	arch := filepath.Join(dir, "archives")
+	for _, in := range []string{arch, arch + string(filepath.Separator), arch + string(filepath.Separator) + "."} {
+		got, err := unzipDest(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != filepath.Join(dir, "unzipped") {
+			t.Errorf("unzipDest(%q) = %s", in, got)
+		}
+	}
+}

@@ -1,39 +1,213 @@
 name: ci
 
+# Pull requests run through pull_request; push runs only for main, so a push to
+# a pull request's branch does not run everything twice.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly: the pinned ExifTool download must still exist and match its hash.
+    - cron: "17 5 * * 1"
+
+# A new push to a pull request cancels its run still in progress. Runs on main
+# are never cancelled, so each commit there keeps its downloads.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# The workflow only reads the repository.
+permissions:
+  contents: read
+
+env:
+  EXIFTOOL_VERSION: "13.59"
+  # Downloadable binaries are named takeout-* only when built from main; any
+  # other run, including a pull request from a fork, names them test-build-*.
+  ARTIFACT_PREFIX: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'takeout' || 'test-build' }}
+  # From https://sourceforge.net/projects/exiftool/files/checksums-13.59.txt
+  EXIFTOOL_TAR_SHA256: 668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a
+  EXIFTOOL_WIN_SHA256: 44b512b25af500724ba579d0a53c8fc5851628b692dd5e5d94ae4a15c2cba9ec
+  # A missing ExifTool or ffmpeg fails the tests instead of skipping them.
+  TAKEOUT_REQUIRE_TOOLS: "1"
 
 jobs:
   test:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: "1.26"
-      - name: ExifTool
-        run: brew install exiftool
-      - run: go vet ./...
-      - run: go test ./...
-
-  build:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
-      - run: go test ./...
-      - run: go build -o takeout ./cmd/takeout
+
+      - uses: ./.github/actions/exiftool
+
+      - name: ffmpeg
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            macOS) brew install ffmpeg ;;
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q ffmpeg ;;
+            Windows) choco install ffmpeg -y --no-progress ;;
+          esac
+
+      - name: Tool versions
+        shell: bash
+        run: |
+          exiftool -ver
+          ffmpeg -hide_banner -version | head -1
+          test "$(exiftool -ver)" = "$EXIFTOOL_VERSION"
+
+      - name: gofmt
+        shell: bash
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      # Every test must run; only these may skip, for the reason each prints.
+      - name: go test (fails on an unexpected skip)
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            Windows) scripts/test.sh TestPathKeyUnixKeepsBackslashAndCase TestCorpusAppleNames TestAlbumCopyFailureIsNotSuccess TestYearFoldersMatchDates ;;
+            macOS) scripts/test.sh TestImportPhotosOffMacOSExplains TestYearFoldersMatchDates ;;
+            *) scripts/test.sh TestYearFoldersMatchDates ;;
+          esac
+      - name: go test -race
+        if: runner.os != 'Windows'
+        run: go test -race ./...
+
+      # Archives and results on different drives, both ways. On the runner,
+      # %TEMP% (test results) is on C: and RUNNER_TEMP is on D:.
+      - name: Corpus across drives (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $c = Split-Path -Qualifier $env:TEMP
+          $d = Split-Path -Qualifier $env:RUNNER_TEMP
+          if ($c -eq $d) { throw "TEMP and RUNNER_TEMP are both on $c" }
+          Write-Host "archives on $d, results on $c"
+          $env:TAKEOUT_CORPUS_ARCHIVES = Join-Path $env:RUNNER_TEMP "corpus-archives"
+          go test -count=1 -run Corpus -v ./internal/pipeline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "archives on $c, results on $d"
+          $env:TAKEOUT_CORPUS_ARCHIVES = Join-Path $env:TEMP "corpus-archives"
+          $env:TEMP = Join-Path $env:RUNNER_TEMP "gotmp"
+          $env:TMP = $env:TEMP
+          New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+          go test -count=1 -run Corpus -v ./internal/pipeline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Smoke test (macOS, Linux)
+        if: runner.os != 'Windows'
+        run: scripts/smoke.sh
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/smoke.ps1 -Results "$env:RUNNER_TEMP\windows-results"
+      - name: Keep Windows results for the macOS verify
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: windows-results
+          path: ${{ runner.temp }}/windows-results
+          include-hidden-files: true
+          retention-days: 3
+
+  # A library built on Windows must pass verify on a Mac, where it is imported.
+  cross-os-verify:
+    needs: test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26"
+      - uses: ./.github/actions/exiftool
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: windows-results
+          path: windows-results
+      - name: Verify on macOS
+        run: |
+          set -eu
+          test -f windows-results/.takeout/report.json
+          test -f windows-results/.takeout/state.jsonl
+          if grep -q '\\\\' windows-results/.takeout/state.jsonl; then echo "journal has backslash paths" >&2; exit 1; fi
+          go build -o takeout ./cmd/takeout
+          ./takeout verify --results windows-results
+
+  # Prebuilt binaries for people who do not want to install Go. Artifacts, not
+  # a release: they need a GitHub sign-in to download and expire.
+  release-artifacts:
+    needs: [test, cross-os-verify, privacy]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26"
+      - name: Build
+        shell: bash
+        run: |
+          set -eu
+          ver=$(git describe --tags --always)
+          for target in windows/amd64 windows/arm64 darwin/arm64 darwin/amd64 linux/amd64; do
+            os=${target%/*}; arch=${target#*/}
+            dir="dist/takeout-$os-$arch"
+            exe=takeout; [ "$os" = windows ] && exe=takeout.exe
+            mkdir -p "$dir"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X github.com/asmodeoux/google-photos-takeout/internal/version.Version=$ver" \
+              -o "$dir/$exe" ./cmd/takeout
+            cp scripts/README-download.txt "$dir/"
+          done
+          ls -lR dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: "${{ env.ARTIFACT_PREFIX }}-windows-amd64", path: dist/takeout-windows-amd64, retention-days: 30 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: "${{ env.ARTIFACT_PREFIX }}-windows-arm64", path: dist/takeout-windows-arm64, retention-days: 30 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: "${{ env.ARTIFACT_PREFIX }}-darwin-arm64", path: dist/takeout-darwin-arm64, retention-days: 30 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: "${{ env.ARTIFACT_PREFIX }}-darwin-amd64", path: dist/takeout-darwin-amd64, retention-days: 30 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: "${{ env.ARTIFACT_PREFIX }}-linux-amd64", path: dist/takeout-linux-amd64, retention-days: 30 }
+
+  # The downloadable takeout.exe itself must pass the smoke test.
+  smoke-prebuilt:
+    needs: release-artifacts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.26"
+      - uses: ./.github/actions/exiftool
+      - name: ffmpeg
+        run: choco install ffmpeg -y --no-progress
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ env.ARTIFACT_PREFIX }}-windows-amd64
+          path: prebuilt
+      - name: Smoke test the prebuilt takeout.exe
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path prebuilt\takeout.exe).Path
+          $v = & $exe version
+          Write-Host "version $v"
+          if ($v -eq "0.1.0") { throw "version was not set at build time" }
+          scripts/smoke.ps1 -Binary $exe
 
   privacy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: refuse tracked personal libraries
         run: |
           set -e
@@ -41,4 +215,9 @@ jobs:
             echo "personal Takeout paths are tracked" >&2
             exit 1
           fi
+          if git ls-files | grep -iE '\.(jpe?g|png|gif|webp|heic|heif|mov|mp4|m4v|3gp|mkv|webm|avi)$' | grep -v '^internal/testgen/testdata/'; then
+            echo "media files outside internal/testgen/testdata" >&2
+            exit 1
+          fi
           git ls-files -z | xargs -0 -r du -b | awk '$1 > 1000000 { print; bad=1 } END { exit bad }'
+          git ls-files -z internal/testgen/testdata | xargs -0 -r du -b | awk '$1 > 30000 { print "fixture over 30 KB: " $0; bad=1 } END { exit bad }'

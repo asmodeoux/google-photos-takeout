@@ -29,6 +29,22 @@ func linuxFS(t int64) string {
 		return "btrfs"
 	case unix.OVERLAYFS_SUPER_MAGIC:
 		return "overlay"
+	case unix.MSDOS_SUPER_MAGIC:
+		return "vfat"
+	case 0x2011bab0:
+		return "exfat"
+	case 0x7366746e, 0x5346544e:
+		return "ntfs"
+	case 0x01021997: // 9p: WSL2 /mnt/c and other Windows drives
+		return "9p"
+	case 0xff534d42:
+		return "cifs"
+	case 0xfe534d42:
+		return "smb2"
+	case 0x517b:
+		return "smb"
+	case unix.FUSE_SUPER_MAGIC:
+		return "fuseblk"
 	default:
 		return fmt.Sprintf("0x%x", uint64(t))
 	}

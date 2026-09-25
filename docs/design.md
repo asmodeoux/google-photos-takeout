@@ -19,7 +19,7 @@ JSON timestamps are UTC instants. The year folder and the clock stored in the fi
 5. `--default-tz`, or else the most common zone in this library.
 6. UTC.
 
-A filename date such as `IMG_20190509_154733` is a wall clock with no zone. It is written as those digits, with no offset.
+A filename date such as `IMG_20190509_154733` is a wall clock with no zone. A still gets those digits with no offset. A video must carry a zone, so it gets `--default-tz` (UTC when unset) at the same wall-clock time; otherwise ExifTool would use the computer's zone.
 
 ## Matching
 
@@ -27,4 +27,4 @@ Sidecars are looked up in the same Takeout folder, even when that folder is spli
 
 ## Live Photos
 
-An Apple Live Photo is a still and a short video that share `ContentIdentifier`. Takeout often names the video `.MP4` even when the container is QuickTime. The video is renamed to `.MOV`, kept beside the still, and never loses its identifier. A Google Motion Photo (a JPEG with a video attached, or a `.MP` file) is left as it is and listed in the report.
+An Apple Live Photo is a still and a short video that share `ContentIdentifier`. Takeout often names the video `.MP4` even when the container is QuickTime. The video is renamed to `.MOV`, kept beside the still, and never loses its identifier. A Pixel motion video saved as a separate `PXL_x.MP` (or `.MV`, `.MP~2`) pairs with `PXL_x.MP.jpg` like any Live Photo. A JPEG with a video embedded inside is left as it is and counted in the report.

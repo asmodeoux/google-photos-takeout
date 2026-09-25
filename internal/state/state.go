@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -18,6 +19,8 @@ type Rec struct {
 	Year  string `json:"year,omitempty"`
 	Name  string `json:"name,omitempty"`
 	Error string `json:"error,omitempty"`
+	// Albums lists the album copies made for this file, as slash paths.
+	Albums []string `json:"albums,omitempty"`
 }
 
 // Journal is the append-only resume log.
@@ -42,13 +45,53 @@ func OpenJournal(path string) (*Journal, error) {
 				j.recs[r.ID] = r
 			}
 		}
+		if err := sc.Err(); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, err
 	}
+	// A crash in the middle of a write leaves a partial last line. End it, so
+	// the next record starts on a line of its own and is not lost with it.
+	if st, err := f.Stat(); err == nil && st.Size() > 0 {
+		last := make([]byte, 1)
+		if r, err := os.Open(path); err == nil {
+			_, rerr := r.ReadAt(last, st.Size()-1)
+			r.Close()
+			if rerr == nil && last[0] != '\n' {
+				if _, err := f.Write([]byte{'\n'}); err != nil {
+					f.Close()
+					return nil, err
+				}
+			}
+		}
+	}
 	j.f = f
 	return j, nil
+}
+
+// ReadJournal returns the latest record for every id without opening the
+// journal for writing, for status and verify, which may run next to a run.
+func ReadJournal(path string) (map[string]Rec, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	recs := map[string]Rec{}
+	sc := bufio.NewScanner(bytes.NewReader(b))
+	sc.Buffer(make([]byte, 0, 64*1024), 2*1024*1024)
+	for sc.Scan() {
+		var r Rec
+		if json.Unmarshal(sc.Bytes(), &r) == nil && r.ID != "" {
+			recs[r.ID] = r
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return recs, nil
 }
 
 func (j *Journal) Get(id string) (Rec, bool) {
@@ -56,6 +99,17 @@ func (j *Journal) Get(id string) (Rec, bool) {
 	defer j.mu.Unlock()
 	r, ok := j.recs[id]
 	return r, ok
+}
+
+// All returns the latest record for every id.
+func (j *Journal) All() []Rec {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := make([]Rec, 0, len(j.recs))
+	for _, r := range j.recs {
+		out = append(out, r)
+	}
+	return out
 }
 
 func (j *Journal) Put(r Rec) error {

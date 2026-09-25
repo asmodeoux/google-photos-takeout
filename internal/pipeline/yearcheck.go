@@ -1,18 +1,21 @@
 package pipeline
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/asmodeoux/google-photos-takeout/internal/exiftool"
+	"github.com/asmodeoux/google-photos-takeout/internal/zipindex"
 )
 
 // YearMismatches lists files under a four-digit year folder whose embedded
 // capture date is a different year. A file in results/2018 must say 2018.
-func YearMismatches(root string) ([]string, error) {
+// Files takeout cannot write tags into, such as CR3 and AVI, are skipped.
+// skip lists results-relative slash paths to leave out.
+func YearMismatches(clients []*exiftool.Client, root string, skip map[string]bool) ([]string, error) {
 	var files []string
 	years := map[string]string{}
 	entries, err := os.ReadDir(root)
@@ -24,7 +27,10 @@ func YearMismatches(root string) ([]string, error) {
 			continue
 		}
 		err := filepath.WalkDir(filepath.Join(root, e.Name()), func(p string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil || d.IsDir() || zipindex.IsSystemName(d.Name()) || !canTag(kindFromExt(d.Name())) {
+				return nil
+			}
+			if rel, err := filepath.Rel(root, p); err == nil && skip[filepath.ToSlash(rel)] {
 				return nil
 			}
 			abs, err := filepath.Abs(p)
@@ -39,41 +45,26 @@ func YearMismatches(root string) ([]string, error) {
 			return nil, err
 		}
 	}
+	rows, errs := exiftool.ReadAll(clients, files, []string{"DateTimeOriginal", "CreationDate", "XMP:DateCreated"}, false)
+	if len(errs) > 0 {
+		return nil, fmt.Errorf("exiftool: %w", errs[0])
+	}
 	var bad []string
-	for start := 0; start < len(files); start += 40 {
-		end := start + 40
-		if end > len(files) {
-			end = len(files)
+	for _, p := range files {
+		row, ok := rows[exiftool.PathKey(p)]
+		if !ok {
+			bad = append(bad, fmt.Sprintf("%s is in %s but has no readable date", filepath.Base(p), years[p]))
+			continue
 		}
-		args := append([]string{"-api", "QuickTimeUTC=1", "-json", "-DateTimeOriginal", "-CreationDate", "-XMP:DateCreated"}, files[start:end]...)
-		out, err := exec.Command("exiftool", args...).Output()
-		if err != nil {
-			return bad, fmt.Errorf("exiftool: %w", err)
+		got := tagYear(fmt.Sprint(row["DateTimeOriginal"]))
+		if got == "" {
+			got = tagYear(fmt.Sprint(row["CreationDate"]))
 		}
-		var rows []map[string]any
-		if json.Unmarshal(out, &rows) != nil {
-			return bad, fmt.Errorf("exiftool returned unreadable JSON")
+		if got == "" {
+			got = tagYear(fmt.Sprint(row["DateCreated"]))
 		}
-		seen := map[string]bool{}
-		for _, row := range rows {
-			src, _ := row["SourceFile"].(string)
-			seen[src] = true
-			got := tagYear(fmt.Sprint(row["DateTimeOriginal"]))
-			if got == "" {
-				got = tagYear(fmt.Sprint(row["CreationDate"]))
-			}
-			if got == "" {
-				got = tagYear(fmt.Sprint(row["DateCreated"]))
-			}
-			want := years[src]
-			if got == "" || got != want {
-				bad = append(bad, fmt.Sprintf("%s is in %s but its date is %s", filepath.Base(src), want, orMissing(got)))
-			}
-		}
-		for _, p := range files[start:end] {
-			if !seen[p] {
-				bad = append(bad, fmt.Sprintf("%s is in %s but has no readable date", filepath.Base(p), years[p]))
-			}
+		if got != years[p] {
+			bad = append(bad, fmt.Sprintf("%s is in %s but its date is %s", filepath.Base(p), years[p], orMissing(got)))
 		}
 	}
 	return bad, nil

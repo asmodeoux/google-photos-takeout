@@ -1,0 +1,412 @@
+{
+  "files": {
+    "1965/scan-1965.jpg": {
+      "DateTimeOriginal": "1965:06:01 13:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2016/hour-24.jpg": {
+      "DateTimeOriginal": "2016:01:26 00:48:29",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2017/ru.jpg": {
+      "DateTimeOriginal": "2017:05:01 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2018/de.jpg": {
+      "DateTimeOriginal": "2018:05:01 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/0bca7b90-299e-4000-b29a-d97037b18456.jpg": {
+      "DateTimeOriginal": "2019:07:03 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/2019-04-21_640fea6c-bb0a-cf02-951c-00d09ac2d3cc.jpg": {
+      "DateTimeOriginal": "2019:04:21 12:00:00"
+    },
+    "2019/CON.jpg": {
+      "DateTimeOriginal": "2019:07:10 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/DSC_0002.NEF": {
+      "DateTimeOriginal": "2019:09:21 02:00:00",
+      "OffsetTimeOriginal": "-07:00"
+    },
+    "2019/IMG-20190203-WA0026.jpg": {
+      "DateTimeOriginal": "2019:02:03 12:00:00"
+    },
+    "2019/IMG_0001.MOV": {
+      "ContentIdentifier": "live-1",
+      "CreateDate": "2019:09:01 01:00:00Z",
+      "CreationDate": "2019:09:01 10:00:00+09:00",
+      "GPSCoordinates": "35.6762 139.6503",
+      "GPSLatitude": "35.6762",
+      "GPSLongitude": "139.6503"
+    },
+    "2019/IMG_0001.heic": {
+      "DateTimeOriginal": "2019:09:01 10:00:00",
+      "GPSLatitude": "35.6762",
+      "GPSLongitude": "139.6503",
+      "OffsetTimeOriginal": "+09:00"
+    },
+    "2019/IMG_0003.CR3": {},
+    "2019/IMG_0003.jpg": {
+      "DateTimeOriginal": "2019:09:22 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/IMG_0010.MOV": {
+      "ContentIdentifier": "live-2",
+      "CreateDate": "2019:09:10 01:00:00Z",
+      "CreationDate": "2019:09:10 10:00:00+09:00",
+      "GPSCoordinates": "35.6762 139.6503",
+      "GPSLatitude": "35.6762",
+      "GPSLongitude": "139.6503"
+    },
+    "2019/IMG_0010.heic": {
+      "DateTimeOriginal": "2019:09:10 10:00:00",
+      "GPSLatitude": "35.6762",
+      "GPSLongitude": "139.6503",
+      "OffsetTimeOriginal": "+09:00"
+    },
+    "2019/IMG_0012.MOV": {
+      "ContentIdentifier": "live-3",
+      "CreateDate": "2019:09:12 09:00:00Z",
+      "CreationDate": "2019:09:12 02:00:00-07:00"
+    },
+    "2019/IMG_0012.heic": {
+      "DateTimeOriginal": "2019:09:12 02:00:00",
+      "OffsetTimeOriginal": "-07:00"
+    },
+    "2019/IMG_0100.heic": {
+      "DateTimeOriginal": "2019:06:13 10:00:00",
+      "GPSLatitude": "35.6762",
+      "GPSLongitude": "139.6503",
+      "OffsetTimeOriginal": "+09:00"
+    },
+    "2019/IMG_20190606_142331.jpg": {
+      "DateTimeOriginal": "2019:06:06 14:23:31"
+    },
+    "2019/IMG_CASE.jpg": {
+      "DateTimeOriginal": "2019:07:12 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/PXL_0002.MOV": {
+      "ContentIdentifier": "live-4",
+      "CreateDate": "2019:09:02 09:00:00Z",
+      "CreationDate": "2019:09:02 18:00:00+09:00"
+    },
+    "2019/PXL_0002.jpg": {
+      "DateTimeOriginal": "2019:09:02 18:00:00",
+      "OffsetTimeOriginal": "+09:00"
+    },
+    "2019/PXL_20190913_160000000.MP.MOV": {
+      "ContentIdentifier": "live-5",
+      "CreateDate": "2019:09:13 16:00:00Z",
+      "CreationDate": "2019:09:13 09:00:00-07:00",
+      "GPSCoordinates": "34.0522 -118.2437",
+      "GPSLatitude": "34.0522",
+      "GPSLongitude": "-118.2437"
+    },
+    "2019/PXL_20190913_160000000.MP.jpg": {
+      "DateTimeOriginal": "2019:09:13 09:00:00",
+      "GPSLatitude": "34.0522",
+      "GPSLongitude": "-118.2437",
+      "OffsetTimeOriginal": "-07:00"
+    },
+    "2019/PXL_20190914_160000000.MP (2).jpg": {
+      "DateTimeOriginal": "2019:09:14 16:00:00"
+    },
+    "2019/PXL_20190914_160000000.MP.mp4": {
+      "CreateDate": "2019:09:14 14:00:00Z",
+      "CreationDate": "2019:09:14 16:00:00+02:00"
+    },
+    "2019/PXL_20190914_160000000.MP~2.mp4": {
+      "CreateDate": "2019:09:14 14:00:00Z",
+      "CreationDate": "2019:09:14 16:00:00+02:00"
+    },
+    "2019/PXL_20190926_090000000.MP.jpg": {
+      "DateTimeOriginal": "2019:09:26 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/RAW_0001.dng": {
+      "DateTimeOriginal": "2019:09:20 02:00:00",
+      "GPSLatitude": "34.0522",
+      "GPSLongitude": "-118.2437",
+      "OffsetTimeOriginal": "-07:00"
+    },
+    "2019/Screenshot_20190607-101010.png": {
+      "DateCreated": "2019:06:07 10:10:10",
+      "DateTimeOriginal": "2019:06:07 10:10:10"
+    },
+    "2019/a_very_long_file_name_for_truncation_tests_x.jpg": {
+      "DateTimeOriginal": "2019:07:02 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/actually-png.png": {
+      "DateCreated": "2019:06:14 18:00:00+09:00",
+      "DateTimeOriginal": "2019:06:14 18:00:00",
+      "OffsetTimeOriginal": "+09:00"
+    },
+    "2019/album-only.jpg": {
+      "DateTimeOriginal": "2019:12:01 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/anim.gif": {
+      "DateCreated": "2019:10:01 11:00:00+02:00"
+    },
+    "2019/archived.jpg": {
+      "DateTimeOriginal": "2019:11:01 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/c1.jpg": {
+      "DateTimeOriginal": "2019:12:04 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/café.jpg": {
+      "DateTimeOriginal": "2019:07:08 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/caption.jpg": {
+      "DateTimeOriginal": "2019:06:08 11:00:00",
+      "ImageDescription": "first line -execute second line",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/clip.mov": {
+      "CreateDate": "2019:08:05 09:00:00Z",
+      "CreationDate": "2019:08:05 11:00:00+02:00"
+    },
+    "2019/created-only.jpg": {
+      "DateTimeOriginal": "2019:06:15 12:00:00",
+      "OffsetTimeOriginal": "+03:00"
+    },
+    "2019/d1.jpg": {
+      "DateTimeOriginal": "2019:12:05 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/dup(1).jpg": {
+      "DateTimeOriginal": "2019:07:04 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/edited-edited.jpg": {
+      "DateTimeOriginal": "2019:07:05 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/edited.jpg": {
+      "DateTimeOriginal": "2019:07:05 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/epoch.jpg": {
+      "DateTimeOriginal": "2019:03:02 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/exif-close.jpg": {
+      "DateTimeOriginal": "2019:06:09 09:00:01"
+    },
+    "2019/exif-far.jpg": {
+      "DateTimeOriginal": "2019:06:10 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/gps-moscow.jpg": {
+      "DateTimeOriginal": "2019:06:06 14:23:31",
+      "GPSLatitude": "55.7558",
+      "GPSLongitude": "37.6173",
+      "OffsetTimeOriginal": "+03:00"
+    },
+    "2019/meta.jpg": {
+      "DateTimeOriginal": "2019:07:15 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/no-geo-exif.jpg": {
+      "DateTimeOriginal": "2019:06:16 12:00:00",
+      "GPSLatitude": "55.7558",
+      "GPSLongitude": "37.6173",
+      "OffsetTimeOriginal": "+03:00"
+    },
+    "2019/old-camera.avi": {},
+    "2019/old.mov": {
+      "CreateDate": "2019:08:04 09:00:00Z",
+      "CreationDate": "2019:08:04 11:00:00+02:00"
+    },
+    "2019/phone.3gp": {
+      "CreateDate": "2019:08:03 09:00:00Z",
+      "CreationDate": "2019:08:03 11:00:00+02:00"
+    },
+    "2019/plain.mov": {
+      "CreateDate": "2019:08:02 09:00:00Z",
+      "CreationDate": "2019:08:02 02:00:00-07:00"
+    },
+    "2019/real.png": {
+      "DateCreated": "2019:06:11 11:00:00+02:00",
+      "DateTimeOriginal": "2019:06:11 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/scan (2).tif": {
+      "DateTimeOriginal": "2019:09:23 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/scan.bmp": {},
+    "2019/short.jpg": {
+      "DateTimeOriginal": "2019:07:01 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/split.jpg": {
+      "DateTimeOriginal": "2019:07:06 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/still.webp": {
+      "DateTimeOriginal": "2019:06:12 18:00:00",
+      "OffsetTimeOriginal": "+09:00"
+    },
+    "2019/t1.jpg": {
+      "DateTimeOriginal": "2019:12:02 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/t2.jpg": {
+      "DateTimeOriginal": "2019:12:03 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/trip-video.mp4": {
+      "CreateDate": "2019:08:01 20:00:00Z",
+      "CreationDate": "2019:08:01 13:00:00-07:00",
+      "GPSCoordinates": "34.0522 -118.2437",
+      "GPSLatitude": "34.0522",
+      "GPSLongitude": "-118.2437"
+    },
+    "2019/what*.jpg": {
+      "DateTimeOriginal": "2019:07:11 11:00:01",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/what?.jpg": {
+      "DateTimeOriginal": "2019:07:11 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/x*.jpg": {
+      "DateTimeOriginal": "2019:12:06 10:00:01",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/x?.jpg": {
+      "DateTimeOriginal": "2019:12:06 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/zero-geo.jpg": {
+      "DateTimeOriginal": "2019:06:07 12:00:00",
+      "OffsetTimeOriginal": "+03:00"
+    },
+    "2019/Ёлка 🌅.jpg": {
+      "DateTimeOriginal": "2019:07:09 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "albums/CON/c1.jpg": {
+      "DateTimeOriginal": "2019:12:04 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "albums/Café \u0026 Friends 🎉/caption.jpg": {
+      "DateTimeOriginal": "2019:06:08 11:00:00",
+      "ImageDescription": "first line -execute second line",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "albums/Collide/x*.jpg": {
+      "DateTimeOriginal": "2019:12:06 10:00:01",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "albums/Collide/x?.jpg": {
+      "DateTimeOriginal": "2019:12:06 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "albums/Trip- \"A|B\"?/album-only.jpg": {
+      "DateTimeOriginal": "2019:12:01 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "albums/Trip- \"A|B\"?/gps-moscow.jpg": {
+      "DateTimeOriginal": "2019:06:06 14:23:31",
+      "GPSLatitude": "55.7558",
+      "GPSLongitude": "37.6173",
+      "OffsetTimeOriginal": "+03:00"
+    },
+    "albums/Trip/t1.jpg": {
+      "DateTimeOriginal": "2019:12:02 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "albums/trailing dot/d1.jpg": {
+      "DateTimeOriginal": "2019:12:05 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "albums/trip (2)/t2.jpg": {
+      "DateTimeOriginal": "2019:12:03 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "unknown/AMB.jpg": {},
+    "unknown/lonely.jpg": {},
+    "unknown/no-date-at-all.jpg": {}
+  },
+  "report": {
+    "album_renames": [
+      "Trip: \"A|B\"? -\u003e Trip- \"A|B\"?",
+      "trailing dot. -\u003e trailing dot",
+      "trip -\u003e trip (2)"
+    ],
+    "date_sources": {
+      "filename": 5,
+      "filename-date": 2,
+      "json-creation": 2,
+      "json-taken": 58,
+      "live": 2
+    },
+    "errors": null,
+    "extension_fixes": [
+      "IMG_0001.HEIC -\u003e IMG_0001.heic",
+      "IMG_0003.JPG -\u003e IMG_0003.jpg",
+      "IMG_0010.HEIC -\u003e IMG_0010.heic",
+      "IMG_0012.HEIC -\u003e IMG_0012.heic",
+      "IMG_0100.HEIC -\u003e IMG_0100.heic",
+      "IMG_CASE.JPG -\u003e IMG_CASE.jpg",
+      "PXL_20190913_160000000.MP -\u003e PXL_20190913_160000000.MP.MOV",
+      "PXL_20190914_160000000.MP -\u003e PXL_20190914_160000000.MP.mp4",
+      "PXL_20190914_160000000.MP~2 -\u003e PXL_20190914_160000000.MP~2.mp4",
+      "actually-png.jpg -\u003e actually-png.png",
+      "clip.webm -\u003e clip.mov",
+      "old.mkv -\u003e old.mov",
+      "PXL_0002.mp4 -\u003e PXL_0002.MOV"
+    ],
+    "failed": 0,
+    "formats": {
+      "avi": 1,
+      "bmp": 1,
+      "cr3": 1,
+      "gif": 1,
+      "heic": 4,
+      "jpeg": 45,
+      "mov": 6,
+      "mp4": 6,
+      "png": 3,
+      "raw": 2,
+      "tiff": 1,
+      "webp": 1
+    },
+    "library": 69,
+    "live_pairs": 5,
+    "media": 75,
+    "motion_photos": 1,
+    "names_rule": "apple",
+    "placeholders": 0,
+    "sidecars": 64,
+    "symlinks_skipped": 1,
+    "system_files_ignored": 5,
+    "tag_errors": 0,
+    "timezone_steps": {
+      "default": 43,
+      "filename": 5,
+      "gps": 11,
+      "neighbor": 10
+    },
+    "unique": 73,
+    "unknown": 3,
+    "untagged": 3,
+    "years": {
+      "1965": 1,
+      "2016": 1,
+      "2017": 1,
+      "2018": 1,
+      "2019": 65
+    }
+  }
+}
