@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -364,5 +365,69 @@ func TestPlacingIntentNeverTakesAnotherPhotosFile(t *testing.T) {
 	sameFiles(t, before, after)
 	if after["2019/IMG.jpg"] != before["2019/IMG.jpg"] {
 		t.Fatal("the other photo's file was rewritten")
+	}
+}
+
+// An album copy that cannot be made fails the run and verify with exit 3,
+// and the next run makes it.
+func TestAlbumCopyFailureIsNotSuccess(t *testing.T) {
+	requireTools(t, "exiftool")
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a folder the test cannot write to")
+	}
+	arch, results := crashTakeout(t)
+	trip := filepath.Join(results, "albums", "Trip")
+	os.MkdirAll(trip, 0o755)
+	os.Chmod(trip, 0o555)
+	code, rep, _ := Run(context.Background(), testOptions(arch, results))
+	if code != ExitReconcile || rep.AlbumErrors != 1 {
+		t.Fatalf("run exit %d, album errors %d", code, rep.AlbumErrors)
+	}
+	if vcode, _, _ := Verify(context.Background(), Options{Results: results}); vcode != ExitReconcile {
+		t.Fatalf("verify exit %d, want %d", vcode, ExitReconcile)
+	}
+	os.Chmod(trip, 0o755)
+	runOK(t, arch, results)
+	if _, err := os.Stat(filepath.Join(trip, "a.jpg")); err != nil {
+		t.Fatal("the album copy was not made on the next run")
+	}
+}
+
+// An album link journaled but never made, then a rerun without albums: the
+// library is complete and verify passes.
+func TestUnmadeAlbumIntentWithAlbumsNone(t *testing.T) {
+	requireTools(t, "exiftool")
+	arch, results := crashTakeout(t)
+	runOK(t, arch, results)
+	rec := lastRecord(t, results, "2019/a.jpg")
+	os.Remove(filepath.Join(results, filepath.FromSlash(rec.Albums[1])))
+	appendRecord(t, results, state.Rec{ID: rec.ID, SHA: rec.SHA, Stage: "placed", Path: rec.Path, Albums: rec.Albums})
+	opt := testOptions(arch, results)
+	opt.Albums = "none"
+	if code, _, err := Run(context.Background(), opt); code != ExitOK {
+		t.Fatalf("run exit %d: %v", code, err)
+	}
+	if vcode, _, verr := Verify(context.Background(), Options{Results: results}); vcode != ExitOK {
+		t.Fatalf("verify exit %d: %v", vcode, verr)
+	}
+}
+
+// Killed after the copy fallback finished but before the staged file was
+// removed: the identical file at the name is adopted, not placed again.
+func TestResumeAfterCrashAfterCopyFallback(t *testing.T) {
+	requireTools(t, "exiftool")
+	arch, results := crashTakeout(t)
+	runOK(t, arch, results)
+	before := snapshot(t, results)
+	rec := lastRecord(t, results, "2019/b.jpg")
+	staging := filepath.Join(results, ".takeout", "staging")
+	os.MkdirAll(staging, 0o755)
+	b, _ := os.ReadFile(filepath.Join(results, "2019", "b.jpg"))
+	os.WriteFile(filepath.Join(staging, rec.SHA), b, 0o644)
+	appendRecord(t, results, state.Rec{ID: rec.ID, SHA: rec.SHA, Stage: "placing", Path: rec.Path})
+	runOK(t, arch, results)
+	sameFiles(t, before, snapshot(t, results))
+	if _, err := os.Stat(filepath.Join(staging, rec.SHA)); err == nil {
+		t.Error("the staged copy was left behind")
 	}
 }

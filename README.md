@@ -238,11 +238,12 @@ With a prebuilt binary use `.\takeout.exe` or `./takeout`. `takeout <command> -h
 | `library`, `unknown` | Files placed in a year folder, and in `unknown/`. |
 | `placeholders` | Google's stand-in images for files it could not export. |
 | `live_pairs`, `identifier_copied` | Live Photo pairs, and pairs that needed a new `ContentIdentifier`. |
-| `tag_errors`, `tag_error_files` | Files that did not take their tags, with ExifTool's message (up to 40). |
+| `tag_errors`, `tag_error_files`, `tag_error_paths` | Files that did not take their tags, with ExifTool's message (up to 40), and all their paths. |
 | `years`, `formats` | Files per year folder and per detected type. |
 | `date_sources`, `timezone_steps` | Where each date and time zone came from. |
 | `with_gps` | Files with a real location. |
 | `untagged` | Files placed with their file dates only, because ExifTool cannot write that format: Canon CR3, AVI, MPEG, WMV, MTS, BMP. |
+| `album_errors` | Album copies that could not be made (often a full disk). The library is complete; run again to make them. Exit code 3. |
 | `failed`, `failed_files` | Files from the zips that are not in the library (a damaged zip entry, a file that could not be placed), with the reason. Exit code 3. |
 | `system_files_ignored`, `symlinks_skipped` | `._` files, `.DS_Store`, `Thumbs.db`, `__MACOSX` entries and symbolic links in the zips. |
 | `names_rule`, `names_reason`, `album_renames` | The naming rule used, why, and album folders whose names had to change. |
@@ -302,7 +303,7 @@ With a prebuilt binary use `.\takeout.exe` or `./takeout`. `takeout <command> -h
 **No report in the results folder.** Run `run` first, or pass the folder it wrote with `--results`.
 
 <a id="exit-3"></a>
-**Exit 3.** Files from the zips did not reach the library: `failed_files` in `report.json` lists each one with the reason, usually a damaged zip part ("checksum error"). Download that part again from takeout.google.com, replace it in the archives folder, and run the same command; finished files are kept. From `verify`, exit 3 also means a library file is missing or in the wrong year folder.
+**Exit 3.** Files from the zips did not reach the library: `failed_files` in `report.json` lists each one with the reason, usually a damaged zip part ("checksum error"). Download that part again from takeout.google.com, replace it in the archives folder, and run the same command; finished files are kept. Exit 3 with `album_errors` means some album copies could not be made, often because the disk is full; the library itself is complete, and the next run makes them. From `verify`, exit 3 also means a library file or album copy is missing, or a photo is in the wrong year folder.
 
 **Exit 4.** Some files did not take tags. They are still in the library with their original metadata. `tag_error_files` in `report.json` lists them with ExifTool's message.
 

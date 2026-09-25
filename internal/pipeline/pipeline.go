@@ -113,6 +113,8 @@ type Report struct {
 	// TagErrorPaths lists every file with a tag error, without the cap, so
 	// verify can tell them from files in the wrong year folder.
 	TagErrorPaths []string `json:"tag_error_paths,omitempty"`
+	// AlbumErrors counts files whose album copy could not be made.
+	AlbumErrors int `json:"album_errors,omitempty"`
 	// Failed counts media that never reached the library; FailedFiles says why.
 	Failed      int          `json:"failed"`
 	FailedFiles []FailedFile `json:"failed_files,omitempty"`
@@ -559,6 +561,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 				return ExitInterrupt, rep, nil
 			}
 			if err := albums(opt, groups, i, dirs, pl, rule, journal); err != nil {
+				rep.AlbumErrors++
 				rep.Errors = append(rep.Errors, err.Error())
 			}
 		}
@@ -615,10 +618,18 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if rep.Failed > 0 {
 		return ExitReconcile, rep, errFailed(rep.Failed, opt.Results)
 	}
+	if rep.AlbumErrors > 0 {
+		return ExitReconcile, rep, errAlbums(rep.AlbumErrors)
+	}
 	if rep.TagErrors > 0 {
 		return ExitTagErrors, rep, nil
 	}
 	return ExitOK, rep, nil
+}
+
+// errAlbums says that some album copies are missing.
+func errAlbums(n int) error {
+	return fmt.Errorf("%d album copies could not be made; errors in report.json says why (often a full disk). The library itself is complete. Run the same command to try them again", n)
 }
 
 // listZips returns the .zip files in dir, in name order. It reads the folder
@@ -1828,11 +1839,26 @@ func place(opt Options, g *group, pl *placer, rule names.Rule, journal *state.Jo
 // staged copy is gone and a file is at the recorded path. If the staged copy
 // is still there, the file at that path, if any, belongs to another group.
 func movedBeforeCrash(results string, rec state.Rec) bool {
-	if _, err := os.Stat(filepath.Join(results, ".takeout", "staging", rec.SHA)); err == nil {
+	placed := filepath.Join(results, filepath.FromSlash(rec.Path))
+	pst, err := os.Stat(placed)
+	if err != nil {
 		return false
 	}
-	_, err := os.Stat(filepath.Join(results, filepath.FromSlash(rec.Path)))
-	return err == nil
+	staging := filepath.Join(results, ".takeout", "staging", rec.SHA)
+	for _, staged := range []string{staging, staging + ".mov"} {
+		sst, err := os.Stat(staged)
+		if err != nil {
+			continue
+		}
+		// A crash after a copy but before the staged file was removed leaves
+		// two identical files: the move did happen.
+		if sst.Size() == pst.Size() && fileCRC(staged) == fileCRC(placed) {
+			_ = os.Remove(staged)
+			return true
+		}
+		return false
+	}
+	return true
 }
 
 func recStage(j *state.Journal, id string) string {
@@ -1928,6 +1954,8 @@ func albums(opt Options, groups []group, i int, dirs map[string]string, pl *plac
 				continue
 			}
 			if err != nil {
+				// Withdraw the intent; the next run tries this album again.
+				_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "placed", Path: filepath.ToSlash(g.outRel), Albums: made})
 				return err
 			}
 			if g.when.OK {
@@ -2465,7 +2493,7 @@ func unzipFile(f *zip.File, root, rel string) error {
 	for n := 1; ; n++ {
 		target := filepath.Join(root, dir, names.WithIndex(file, n))
 		if st, err := os.Stat(target); err == nil {
-			if n == 1 && uint64(st.Size()) == f.UncompressedSize64 && fileCRC(target) == f.CRC32 {
+			if uint64(st.Size()) == f.UncompressedSize64 && fileCRC(target) == f.CRC32 {
 				return nil // extracted by an earlier, interrupted run
 			}
 			continue
@@ -2567,7 +2595,12 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 		if rec.Stage != "placed" && rec.Stage != "cloned" {
 			continue
 		}
-		for _, p := range append([]string{rec.Path}, rec.Albums...) {
+		paths := []string{rec.Path}
+		if rec.Stage == "cloned" {
+			// Album copies are finished only once the record says cloned.
+			paths = append(paths, rec.Albums...)
+		}
+		for _, p := range paths {
 			if p == "" {
 				continue
 			}
@@ -2582,6 +2615,9 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	}
 	if rep.Failed > 0 {
 		return ExitReconcile, rep, errFailed(rep.Failed, opt.Results)
+	}
+	if rep.AlbumErrors > 0 {
+		return ExitReconcile, rep, errAlbums(rep.AlbumErrors)
 	}
 	clients, err := startClients(opt.Exiftool, 4)
 	if err != nil {

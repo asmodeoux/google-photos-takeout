@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -44,6 +45,9 @@ func OpenJournal(path string) (*Journal, error) {
 				j.recs[r.ID] = r
 			}
 		}
+		if err := sc.Err(); err != nil {
+			return nil, fmt.Errorf("%s: %w", path, err)
+		}
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -83,6 +87,9 @@ func ReadJournal(path string) (map[string]Rec, error) {
 		if json.Unmarshal(sc.Bytes(), &r) == nil && r.ID != "" {
 			recs[r.ID] = r
 		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return recs, nil
 }

@@ -253,6 +253,16 @@ func TestUnzipNeverReplacesFiles(t *testing.T) {
 	if len(after) != len(first)+1 {
 		t.Fatalf("files: %d before, %d after (want one more)", len(first), len(after))
 	}
+	// Interrupted again: the " (2)" copy made last time is kept, not made a third time.
+	for _, z := range zips {
+		os.Remove(filepath.Join(dest, strings.TrimSuffix(filepath.Base(z), ".zip"), ".complete"))
+	}
+	if err := unzipAll(context.Background(), zips, dest); err != nil {
+		t.Fatal(err)
+	}
+	if again := snapshot(t, dest); len(again) != len(after) {
+		t.Fatalf("files: %d, then %d after another resume", len(after), len(again))
+	}
 	for rel := range after {
 		if strings.HasSuffix(rel, ".partial") {
 			t.Errorf("leftover %s", rel)

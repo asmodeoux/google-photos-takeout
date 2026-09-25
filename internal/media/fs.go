@@ -1,6 +1,8 @@
 package media
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"io"
 	"io/fs"
 	"os"
@@ -49,7 +51,10 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	tmp := filepath.Join(filepath.Dir(dst), "."+filepath.Base(dst)+".partial")
+	// A short fixed-length name: dst may already be at the 255-byte limit.
+	var rnd [6]byte
+	_, _ = rand.Read(rnd[:])
+	tmp := filepath.Join(filepath.Dir(dst), ".takeout-"+hex.EncodeToString(rnd[:])+".partial")
 	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
