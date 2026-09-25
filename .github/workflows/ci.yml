@@ -79,6 +79,27 @@ jobs:
         if: runner.os != 'Windows'
         run: go test -race ./...
 
+      # Archives and results on different drives, both ways. On the runner,
+      # %TEMP% (test results) is on C: and RUNNER_TEMP is on D:.
+      - name: Corpus across drives (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $c = Split-Path -Qualifier $env:TEMP
+          $d = Split-Path -Qualifier $env:RUNNER_TEMP
+          if ($c -eq $d) { throw "TEMP and RUNNER_TEMP are both on $c" }
+          Write-Host "archives on $d, results on $c"
+          $env:TAKEOUT_CORPUS_ARCHIVES = Join-Path $env:RUNNER_TEMP "corpus-archives"
+          go test -count=1 -run Corpus -v ./internal/pipeline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "archives on $c, results on $d"
+          $env:TAKEOUT_CORPUS_ARCHIVES = Join-Path $env:TEMP "corpus-archives"
+          $env:TEMP = Join-Path $env:RUNNER_TEMP "gotmp"
+          $env:TMP = $env:TEMP
+          New-Item -ItemType Directory -Force $env:TEMP | Out-Null
+          go test -count=1 -run Corpus -v ./internal/pipeline
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Smoke test (macOS, Linux)
         if: runner.os != 'Windows'
         run: scripts/smoke.sh

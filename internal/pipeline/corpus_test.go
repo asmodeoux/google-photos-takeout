@@ -52,6 +52,20 @@ func runCorpus(t *testing.T, rule string) corpusResult {
 	t.Helper()
 	dir := t.TempDir()
 	arch := filepath.Join(dir, "archives")
+	// CI points this at another drive so archives and results are on
+	// different volumes, as when reading zips from an external disk.
+	if base := os.Getenv("TAKEOUT_CORPUS_ARCHIVES"); base != "" {
+		if err := os.MkdirAll(base, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		d, err := os.MkdirTemp(base, "archives-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.RemoveAll(d) })
+		arch = d
+		t.Logf("archives %s, results %s", arch, dir)
+	}
 	results := filepath.Join(dir, "results")
 	if _, err := testgen.Corpus().Write(arch); err != nil {
 		t.Fatal(err)
@@ -142,6 +156,7 @@ func runCorpus(t *testing.T, rule string) corpusResult {
 	}
 	var errList []string
 	for _, e := range rep.Errors {
+		e = strings.ReplaceAll(e, arch, "<tmp>"+string(filepath.Separator)+"archives")
 		e = strings.ReplaceAll(e, dir, "<tmp>")
 		errList = append(errList, e)
 	}
