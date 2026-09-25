@@ -7,8 +7,15 @@ on:
     # Weekly: the pinned ExifTool download must still exist and match its hash.
     - cron: "17 5 * * 1"
 
+# The workflow only reads the repository.
+permissions:
+  contents: read
+
 env:
   EXIFTOOL_VERSION: "13.59"
+  # Downloadable binaries are named takeout-* only when built from main; any
+  # other run, including a pull request from a fork, names them test-build-*.
+  ARTIFACT_PREFIX: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'takeout' || 'test-build' }}
   # From https://sourceforge.net/projects/exiftool/files/checksums-13.59.txt
   EXIFTOOL_TAR_SHA256: 668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a
   EXIFTOOL_WIN_SHA256: 44b512b25af500724ba579d0a53c8fc5851628b692dd5e5d94ae4a15c2cba9ec
@@ -23,8 +30,8 @@ jobs:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
 
@@ -85,7 +92,7 @@ jobs:
         run: scripts/smoke.ps1 -Results "$env:RUNNER_TEMP\windows-results"
       - name: Keep Windows results for the macOS verify
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows-results
           path: ${{ runner.temp }}/windows-results
@@ -97,12 +104,12 @@ jobs:
     needs: test
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
       - uses: ./.github/actions/exiftool
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: windows-results
           path: windows-results
@@ -121,10 +128,10 @@ jobs:
     needs: [test, cross-os-verify, privacy]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
       - name: Build
@@ -143,32 +150,32 @@ jobs:
             cp scripts/README-download.txt "$dir/"
           done
           ls -lR dist
-      - uses: actions/upload-artifact@v4
-        with: { name: takeout-windows-amd64, path: dist/takeout-windows-amd64, retention-days: 30 }
-      - uses: actions/upload-artifact@v4
-        with: { name: takeout-windows-arm64, path: dist/takeout-windows-arm64, retention-days: 30 }
-      - uses: actions/upload-artifact@v4
-        with: { name: takeout-darwin-arm64, path: dist/takeout-darwin-arm64, retention-days: 30 }
-      - uses: actions/upload-artifact@v4
-        with: { name: takeout-darwin-amd64, path: dist/takeout-darwin-amd64, retention-days: 30 }
-      - uses: actions/upload-artifact@v4
-        with: { name: takeout-linux-amd64, path: dist/takeout-linux-amd64, retention-days: 30 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: "${{ env.ARTIFACT_PREFIX }}-windows-amd64", path: dist/takeout-windows-amd64, retention-days: 30 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: "${{ env.ARTIFACT_PREFIX }}-windows-arm64", path: dist/takeout-windows-arm64, retention-days: 30 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: "${{ env.ARTIFACT_PREFIX }}-darwin-arm64", path: dist/takeout-darwin-arm64, retention-days: 30 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: "${{ env.ARTIFACT_PREFIX }}-darwin-amd64", path: dist/takeout-darwin-amd64, retention-days: 30 }
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with: { name: "${{ env.ARTIFACT_PREFIX }}-linux-amd64", path: dist/takeout-linux-amd64, retention-days: 30 }
 
   # The downloadable takeout.exe itself must pass the smoke test.
   smoke-prebuilt:
     needs: release-artifacts
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: "1.26"
       - uses: ./.github/actions/exiftool
       - name: ffmpeg
         run: choco install ffmpeg -y --no-progress
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: takeout-windows-amd64
+          name: ${{ env.ARTIFACT_PREFIX }}-windows-amd64
           path: prebuilt
       - name: Smoke test the prebuilt takeout.exe
         shell: pwsh
@@ -182,7 +189,7 @@ jobs:
   privacy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: refuse tracked personal libraries
         run: |
           set -e

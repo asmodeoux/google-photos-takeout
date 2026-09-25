@@ -71,7 +71,7 @@ winget install --id Gyan.FFmpeg -e
 <details>
 <summary>Prebuilt takeout.exe without installing Go</summary>
 
-Every green CI run on `main` builds `takeout.exe`. On GitHub, open **Actions**, pick the latest green run on `main`, and download **takeout-windows-amd64** (or `-arm64`) under **Artifacts**. You need to be signed in to GitHub, and artifacts expire after 30 days. There is no signed release yet, so:
+Every green CI run on `main` builds `takeout.exe`. On GitHub, open **Actions**, pick the latest green run on `main`, and download **takeout-windows-amd64** (or `-arm64`) under **Artifacts**. Only runs on `main` publish `takeout-*` artifacts; `test-build-*` ones come from pull requests and are not for use. You need to be signed in to GitHub, and artifacts expire after 30 days. There is no signed release yet, so:
 
 - Extract the zip, then run `Unblock-File .\takeout.exe` in that folder.
 - If SmartScreen says "Windows protected your PC", choose **More info**, then **Run anyway**. <a id="smartscreen"></a>
