@@ -89,6 +89,8 @@ type Report struct {
 	PlaceholderURL []string       `json:"placeholder_urls,omitempty"`
 	Errors         []string       `json:"errors,omitempty"`
 	Filesystem     string         `json:"filesystem"`
+	BirthTimeErrs  int            `json:"birth_time_errors,omitempty"`
+	BirthTimeList  []string       `json:"birth_time_error_files,omitempty"`
 	ExportIDs      []string       `json:"export_ids,omitempty"`
 	NamesRule      string         `json:"names_rule,omitempty"`
 	NamesReason    string         `json:"names_reason,omitempty"`
@@ -176,6 +178,10 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 
 	if opt.UnzipOnly || opt.KeepUnzipped {
+		dest := filepath.Join(filepath.Dir(opt.Archives), "unzipped")
+		if err := checkUnzipDest(dest, idx); err != nil {
+			return ExitPreflight, rep, err
+		}
 		pr.Phase("unzip")
 		if err := unzipAll(ctx, zips, filepath.Join(filepath.Dir(opt.Archives), "unzipped")); err != nil {
 			return ExitPreflight, rep, err
@@ -284,6 +290,9 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if fs.Free > 0 && fs.Free < need {
 		return ExitPreflight, rep, fmt.Errorf("need about %d GB free on %s (%s), have %d GB", need/1e9, opt.Results, fs.Type, fs.Free/1e9)
 	}
+	if n := tooBigForFAT(fs.Type, groups); n > 0 {
+		return ExitPreflight, rep, fmt.Errorf("%d file(s) are 4 GiB or larger and cannot be written to %s (%s). Use an exFAT or NTFS disk for --results", n, opt.Results, fs.Type)
+	}
 	rule, reason, err := names.ChooseRule(opt.Names, fs.Type, runtime.GOOS == "windows")
 	if err != nil {
 		return ExitPreflight, rep, err
@@ -364,6 +373,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		groups[i].when = ws[i]
 	}
 
+	times := &timeLog{}
 	pr.Phase("tags")
 	jobs := make(chan int)
 	var wg sync.WaitGroup
@@ -375,7 +385,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 			defer wg.Done()
 			for i := range jobs {
 				g := &groups[i]
-				if err := writeTags(c, opt.Results, g, i); err != nil {
+				if err := writeTags(c, opt.Results, g, i, times); err != nil {
 					g.tagErr = err.Error()
 					repMu.Lock()
 					rep.TagErrors++
@@ -417,6 +427,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 
 	pr.Phase("place")
 	pl := newPlacer(opt.Results, journal)
+	pl.times = times
 	for i := range groups {
 		g := &groups[i]
 		if g.skip || g.staged == "" {
@@ -438,6 +449,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		}
 	}
 
+	rep.BirthTimeErrs, rep.BirthTimeList = times.count, times.paths
 	fates := ledger(idx.Entries, groups, skippedJSON, screenshots, opt.IncludeTrash)
 	if opt.Sample == 0 && !state.Balanced(fates, len(idx.Entries)) {
 		rep.Errors = append(rep.Errors, fmt.Sprintf("ledger %d != zip entries %d", len(fates), len(idx.Entries)))
@@ -843,7 +855,10 @@ func extractGroup(readers map[string]*zipSet, g *group, results string, journal 
 	g.trueType = zipindex.Sniff(head)
 	g.sha = hex.EncodeToString(h.Sum(nil))
 	final := filepath.Join(staging, g.sha)
-	if err := os.Rename(partial, final); err != nil {
+	// The staged name is the content hash, so an existing file there is the same bytes.
+	if err := media.Rename(partial, final); errors.Is(err, fs.ErrExist) {
+		_ = os.Remove(partial)
+	} else if err != nil {
 		return err
 	}
 	g.staged = final
@@ -1159,7 +1174,7 @@ func resolveDates(groups []group, opt Options) {
 	}
 }
 
-func writeTags(c tagRunner, results string, g *group, id int) error {
+func writeTags(c tagRunner, results string, g *group, id int, times *timeLog) error {
 	if !exiftool.Within(results, g.staged) && !strings.Contains(g.staged, ".takeout") {
 		return fmt.Errorf("refusing to write outside results: %s", g.staged)
 	}
@@ -1188,9 +1203,28 @@ func writeTags(c tagRunner, results string, g *group, id int) error {
 	}
 	// ExifTool replaces the file, which clears the macOS creation date.
 	if g.when.OK {
-		_ = media.SetTimes(g.staged, g.when.Local())
+		times.set(g.staged, g.when.Local())
 	}
 	return nil
+}
+
+// timeLog sets file times and remembers the files where that failed. A missing
+// creation date is not a tag error, but the report says where it happened.
+type timeLog struct {
+	mu    sync.Mutex
+	count int
+	paths []string
+}
+
+func (l *timeLog) set(p string, t time.Time) {
+	if err := media.SetTimes(p, t); err != nil && l != nil {
+		l.mu.Lock()
+		l.count++
+		if len(l.paths) < 10 {
+			l.paths = append(l.paths, filepath.Base(p)+": "+err.Error())
+		}
+		l.mu.Unlock()
+	}
 }
 
 // tagRunner is the part of an ExifTool client that writeTags needs.
@@ -1248,6 +1282,7 @@ type placer struct {
 	taken   map[string]bool // names.Key of results-relative slash paths
 	next    map[string]int  // last index used per folder + stem
 	pairN   map[string]int  // index chosen for a Live Photo pair
+	times   *timeLog
 }
 
 func newPlacer(results string, journal *state.Journal) *placer {
@@ -1362,7 +1397,7 @@ func place(opt Options, g *group, pl *placer, rule names.Rule, journal *state.Jo
 	g.outRel = rel
 	g.staged = dest
 	if g.when.OK {
-		_ = media.SetTimes(dest, g.when.Local())
+		pl.times.set(dest, g.when.Local())
 	}
 	_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "placed", Path: filepath.ToSlash(rel), Year: dir, Name: filepath.Base(rel)})
 	return nil
@@ -1445,7 +1480,7 @@ func albums(opt Options, groups []group, i int, dirs map[string]string, pl *plac
 				return err
 			}
 			if g.when.OK {
-				_ = media.SetTimes(dest, g.when.Local())
+				pl.times.set(dest, g.when.Local())
 			}
 			made = append(made, filepath.ToSlash(rel))
 			break
@@ -1489,6 +1524,66 @@ func ffmpegOK(bin string) bool {
 	}
 	_, err := exec.LookPath(bin)
 	return err == nil
+}
+
+// fatMax is the largest file FAT32 can store.
+const fatMax = 4<<30 - 1
+
+func isFAT(fsType string) bool {
+	switch strings.ToLower(fsType) {
+	case "fat", "fat12", "fat16", "fat32", "vfat", "msdos":
+		return true
+	}
+	return false
+}
+
+// tooBigForFAT counts files that FAT32 cannot hold. A WebM is converted to
+// MOV, which can grow, so its size is counted one and a half times.
+func tooBigForFAT(fsType string, groups []group) int {
+	if !isFAT(fsType) {
+		return 0
+	}
+	n := 0
+	for _, g := range groups {
+		if len(g.members) == 0 {
+			continue
+		}
+		size := g.members[g.canon].Size
+		if strings.EqualFold(filepath.Ext(g.members[g.canon].Name), ".webm") || strings.EqualFold(filepath.Ext(g.members[g.canon].Name), ".mkv") {
+			size += size / 2
+		}
+		if size > fatMax {
+			n++
+		}
+	}
+	return n
+}
+
+// checkUnzipDest runs before any extraction: the destination needs room for
+// every entry and, on FAT32, no single file of 4 GiB or more.
+func checkUnzipDest(dest string, idx *zipindex.Index) error {
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return err
+	}
+	fs, err := media.Stat(dest)
+	if err != nil {
+		return err
+	}
+	var total uint64
+	big := 0
+	for _, e := range idx.Entries {
+		total += e.Size
+		if e.Size > fatMax {
+			big++
+		}
+	}
+	if isFAT(fs.Type) && big > 0 {
+		return fmt.Errorf("%d file(s) in the zips are 4 GiB or larger and cannot be extracted to %s (%s). Use an exFAT or NTFS disk", big, dest, fs.Type)
+	}
+	if fs.Free > 0 && fs.Free < total {
+		return fmt.Errorf("unzip needs about %d GB free on %s (%s), have %d GB", total/1e9, dest, fs.Type, fs.Free/1e9)
+	}
+	return nil
 }
 
 func estimate(gs []group, apfs bool, albums string) uint64 {

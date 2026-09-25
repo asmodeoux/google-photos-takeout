@@ -1,5 +1,3 @@
-//go:build !windows
-
 package progress
 
 import "golang.org/x/term"
