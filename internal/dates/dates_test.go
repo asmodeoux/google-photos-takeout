@@ -114,3 +114,33 @@ func TestOutOfRangeJSON(t *testing.T) {
 }
 
 func ptr(t time.Time) *time.Time { return &t }
+
+func TestFromFilenameDateOnly(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cases := map[string]string{
+		"IMG-20170203-WA0026.jpg":                             "2017-02-03 12:00",
+		"VID-20180101-WA0001.mp4":                             "2018-01-01 12:00",
+		"2022-04-21_640fea6c-bb0a-cf02-951c-00d09ac2d3cc.jpg": "2022-04-21 12:00",
+		"2021-12-31 party.jpg":                                "2021-12-31 12:00",
+		"20200615_beach.jpg":                                  "2020-06-15 12:00",
+	}
+	for name, want := range cases {
+		w := FromFilename(name, now)
+		if !w.OK || w.Source != SrcFilenameDate || w.Instant.Format("2006-01-02 15:04") != want || w.OffsetKnown {
+			t.Errorf("%s: %+v", name, w)
+		}
+	}
+	for _, name := range []string{
+		"0bca7b90-299e-4000-b29a-d97037b18456.jpg", "20200615_101010.jpg" + "x", "2022-13-45_x.jpg",
+		"IMG-99990101-WA0001.jpg", "photo-2022-04-21.jpg", "20200615123.jpg",
+	} {
+		w := FromFilename(name, now)
+		if w.OK && w.Source == SrcFilenameDate {
+			t.Errorf("%s matched as date-only: %+v", name, w)
+		}
+	}
+	// A full timestamp still wins over the date-only rule.
+	if w := FromFilename("20200615_101010.jpg", now); w.Source != SrcFilename {
+		t.Fatalf("full timestamp: %+v", w)
+	}
+}

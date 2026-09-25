@@ -71,6 +71,10 @@ func Corpus() *Takeout {
 	t.Put(1, y19, "IMG_20190606_142331.jpg", JPEG(next()))
 	t.Row("no-sidecar-date-from-screenshot-name")
 	t.Put(1, y19, "Screenshot_20190607-101010.png", PNG(next()))
+	t.Row("gpth-395-whatsapp-name-date-only")
+	t.Put(1, y19, "IMG-20190203-WA0026.jpg", JPEG(next()))
+	t.Row("gpth-436-date-prefix-and-uuid")
+	t.Put(1, y19, "2019-04-21_640fea6c-bb0a-cf02-951c-00d09ac2d3cc.jpg", JPEG(next()))
 	t.Row("no-sidecar-no-date-goes-to-unknown")
 	t.Put(1, y19, "no-date-at-all.jpg", JPEG(next()))
 

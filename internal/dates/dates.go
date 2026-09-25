@@ -19,7 +19,11 @@ const (
 	SrcLive     = "live"
 	SrcEmbedded = "embedded"
 	SrcFilename = "filename"
-	SrcUnknown  = "unknown"
+	// SrcFilenameDate is a name with a day but no time, such as WhatsApp's
+	// IMG-20170203-WA0026.jpg. The time is set to 12:00 so no timezone moves
+	// the photo to another day.
+	SrcFilenameDate = "filename-date"
+	SrcUnknown      = "unknown"
 
 	TZGPS      = "gps"
 	TZEmbedded = "embedded-offset"
@@ -234,7 +238,7 @@ func ApplyFallback(files []When, defaultTZ string) {
 	}
 	for i := range files {
 		w := &files[i]
-		if !w.OK || w.OffsetKnown || w.Source == SrcFilename || w.Source == SrcUnknown || w.Source == "" {
+		if !w.OK || w.OffsetKnown || w.Source == SrcFilename || w.Source == SrcFilenameDate || w.Source == SrcUnknown || w.Source == "" {
 			continue
 		}
 		best := time.Duration(1 << 62)
@@ -335,6 +339,36 @@ func FromFilename(name string, now time.Time) When {
 				return When{Instant: t, OK: true, Year: t.Year(), Source: SrcFilename, TZStep: TZFilename, OffsetKnown: false}
 			}
 		}
+	}
+	return fromDateOnlyName(base, now)
+}
+
+// dateOnly are names that carry a day but no time. Each must anchor at the
+// start of the name, so hex IDs and UUIDs never match.
+var dateOnly = []struct {
+	re     *regexp.Regexp
+	layout string
+}{
+	{regexp.MustCompile(`^(?:IMG|VID|AUD|PTT|STK)-((?:19|20)\d{6})-WA\d+`), "20060102"},
+	{regexp.MustCompile(`^((?:19|20)\d{2}-[01]\d-[0-3]\d)[_ ]`), "2006-01-02"},
+	{regexp.MustCompile(`^((?:19|20)\d{2}[01]\d[0-3]\d)_[^\d]`), "20060102"},
+}
+
+func fromDateOnlyName(base string, now time.Time) When {
+	for _, d := range dateOnly {
+		m := d.re.FindStringSubmatch(base)
+		if m == nil {
+			continue
+		}
+		day, err := time.ParseInLocation(d.layout, m[1], time.UTC)
+		if err != nil {
+			continue
+		}
+		t := day.Add(12 * time.Hour)
+		if !InBounds(t, now) {
+			continue
+		}
+		return When{Instant: t, OK: true, Year: t.Year(), Source: SrcFilenameDate, TZStep: TZFilename}
 	}
 	return When{}
 }

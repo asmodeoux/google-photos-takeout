@@ -16,9 +16,15 @@
       "DateTimeOriginal": "2019:07:03 11:00:00",
       "OffsetTimeOriginal": "+02:00"
     },
+    "2019/2019-04-21_640fea6c-bb0a-cf02-951c-00d09ac2d3cc.jpg": {
+      "DateTimeOriginal": "2019:04:21 12:00:00"
+    },
     "2019/CON_.jpg": {
       "DateTimeOriginal": "2019:07:10 11:00:00",
       "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/IMG-20190203-WA0026.jpg": {
+      "DateTimeOriginal": "2019:02:03 12:00:00"
     },
     "2019/IMG_0001.MOV": {
       "ContentIdentifier": "live-1",
@@ -260,6 +266,7 @@
     ],
     "date_sources": {
       "filename": 2,
+      "filename-date": 2,
       "json-creation": 1,
       "json-taken": 45
     },
@@ -276,32 +283,32 @@
     "formats": {
       "gif": 1,
       "heic": 2,
-      "jpeg": 37,
+      "jpeg": 39,
       "mov": 4,
       "mp4": 3,
       "png": 3,
       "webp": 1
     },
-    "library": 48,
+    "library": 50,
     "live_pairs": 2,
-    "media": 54,
+    "media": 56,
     "names_rule": "portable",
     "placeholders": 0,
     "sidecars": 51,
     "tag_errors": 0,
     "timezone_steps": {
       "default": 33,
-      "filename": 2,
+      "filename": 4,
       "gps": 6,
       "neighbor": 7
     },
-    "unique": 52,
+    "unique": 54,
     "unknown": 3,
     "years": {
       "2016": 1,
       "2017": 1,
       "2018": 1,
-      "2019": 45
+      "2019": 47
     }
   }
 }
