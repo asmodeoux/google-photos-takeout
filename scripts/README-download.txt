@@ -1,8 +1,10 @@
 takeout: turn a Google Photos Takeout into a library Apple Photos imports
 with the right dates, places, Live Photos and albums.
 
-This folder was built by the project's CI from the source on GitHub:
-https://github.com/asmodeoux/google-photos-takeout
+This folder comes from a takeout release, built from the source by the
+project's GitHub Actions:
+https://github.com/asmodeoux/google-photos-takeout/releases
+SHA256SUMS.txt on that page lists each download's checksum.
 
 You also need ExifTool (required) and ffmpeg (optional, for WebM/MKV).
 

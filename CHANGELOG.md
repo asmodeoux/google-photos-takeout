@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.0.0 (2026-09-25)
 
 Windows support, and fixes for export layouts reported against other Takeout tools.
 
@@ -10,7 +10,7 @@ Windows support, and fixes for export layouts reported against other Takeout too
 - `takeout doctor` checks ExifTool, the results folder, and non-English paths.
 - `--names auto|apple|portable`. `auto` uses the portable rule on NTFS, exFAT, FAT and on Windows.
 - `--no-keep-awake`. `run` and `unzip` keep the computer awake by default.
-- Prebuilt binaries for Windows, macOS and Linux as CI artifacts.
+- Prebuilt binaries for Windows (x64, ARM), macOS (Apple silicon, Intel) and Linux on GitHub Releases, with SHA256SUMS. They are not code-signed yet.
 - Camera RAW (DNG, CR2, NEF, ARW and others) gets dates and GPS. Canon CR3 is placed with its camera date.
 - Pixel `.MP` / `.MV` motion videos pair with their `.MP.jpg` as Live Photos.
 - Sidecars whose name differs only in case, and `.metadata.json` sidecars, are matched.

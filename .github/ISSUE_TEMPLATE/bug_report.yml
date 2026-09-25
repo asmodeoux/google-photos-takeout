@@ -6,7 +6,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: takeout --version
+      label: takeout version
       description: Output of `./takeout version` (Windows `.\takeout.exe version`).
     validations:
       required: true

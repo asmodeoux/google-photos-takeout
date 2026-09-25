@@ -5,7 +5,7 @@ Deferred from the Windows support plan, and known limitations.
 - **ContentIdentifier on stills without Apple MakerNotes.** ExifTool cannot create Apple MakerNotes, so `-Apple:ContentIdentifier` is silently not written to a still that has none (JPEG and HEIC from non-Apple cameras, and synthetic files). The video half gets its identifier; Apple Photos may not pair the two. Options: write the identifier where Photos also reads it, or copy a MakerNotes block. Needs a test on a real Mac import.
 - **Finish `import-photos`.** It checks the library choice and prints an AppleScript, but does not import files or create albums yet.
 - **Pixel Motion Photo to Live Photo** (GooglePhotosTakeoutHelper PR #384). Split a JPEG with an embedded video into a still and a `.MOV` with a shared identifier.
-- **Signed, tagged releases.** CI artifacts need a GitHub sign-in and expire. Publish signed binaries on tagged releases.
+- **Code-signed release binaries.** Tagged releases publish binaries with SHA256SUMS, but they are not signed: Windows SmartScreen and macOS Gatekeeper warn on first run. Sign and notarize them.
 - **Hardlink albums on NTFS.** Album folders are full copies off APFS. Hard links would save the space, with the caveat that editing one copy edits all.
 - **ReFS block cloning** on Windows Server and Dev Drive, like APFS clones.
 - **Historical time zones before about 1900.** GPS time-zone lookup can give local mean time offsets with seconds; EXIF offsets hold only minutes, so the written instant can be off by seconds for such old dated scans.

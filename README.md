@@ -39,9 +39,27 @@ The folder is called `archives` below. Anything works: `archives/` inside this p
 
 ### 2. Install
 
-You need **ExifTool** (writes the tags) and, to build from source, **Go**. **ffmpeg** is optional: without it, WebM and MKV videos are copied to `results/not-importable/` instead of being converted.
+You need **ExifTool**, which writes the tags. **ffmpeg** is optional: without it, WebM and MKV videos are copied to `results/not-importable/` instead of being converted. takeout itself comes ready to run from the [latest release](https://github.com/asmodeoux/google-photos-takeout/releases/latest); building it from source needs **Go**.
+
+Each release has one archive per system (`takeout-<version>-<system>-<cpu>`) and `SHA256SUMS.txt` to check them. The binaries are not code-signed yet, so the first run needs one extra step, shown below.
 
 #### macOS
+
+```sh
+brew install exiftool ffmpeg
+```
+
+Download `takeout-<version>-darwin-arm64.tar.gz` (Apple silicon) or `-darwin-amd64` (Intel) from the [latest release](https://github.com/asmodeoux/google-photos-takeout/releases/latest), then in Terminal, in the folder you extracted:
+
+```sh
+xattr -d com.apple.quarantine takeout   # the binary is not notarized yet
+./takeout doctor
+```
+
+Use `./takeout` wherever this guide says `./takeout.sh`.
+
+<details>
+<summary>Build from source instead</summary>
 
 ```sh
 brew install go exiftool ffmpeg
@@ -49,41 +67,48 @@ git clone https://github.com/asmodeoux/google-photos-takeout.git
 cd google-photos-takeout
 ./takeout.sh doctor
 ```
+</details>
 
 #### Windows
 
 In PowerShell:
 
 ```powershell
-winget install --id GoLang.Go -e
 winget install --id OliverBetz.ExifTool -e
 winget install --id Gyan.FFmpeg -e
 ```
 
-**Open a new PowerShell window** so it sees the new programs. Then download this project (green **Code** button, **Download ZIP**, then extract it, or `git clone`), and in that folder:
+**Open a new PowerShell window** so it sees the new programs. Download `takeout-<version>-windows-amd64.zip` (or `-arm64` for ARM PCs) from the [latest release](https://github.com/asmodeoux/google-photos-takeout/releases/latest), extract it, and in that folder:
+
+```powershell
+Unblock-File .\takeout.exe
+.\takeout.exe doctor
+```
+
+<a id="smartscreen"></a>If SmartScreen says "Windows protected your PC", choose **More info**, then **Run anyway**: the file is not code-signed yet. `Get-FileHash .\takeout-<version>-windows-amd64.zip` should match its line in `SHA256SUMS.txt`.
+
+Use `.\takeout.exe` wherever this guide says `./takeout.sh`.
+
+<details>
+<summary>Build from source instead</summary>
+
+```powershell
+winget install --id GoLang.Go -e
+```
+
+Open a new PowerShell window, download this project (green **Code** button, **Download ZIP**, then extract it, or `git clone`), and in that folder:
 
 ```powershell
 .\takeout.cmd doctor
 ```
 
-`takeout.cmd` builds `takeout.exe` the first time and works even where PowerShell blocks scripts. Every command below works the same way with `.\takeout.cmd` in place of `./takeout.sh`.
-
-<details>
-<summary>Prebuilt takeout.exe without installing Go</summary>
-
-Every green CI run on `main` builds `takeout.exe`. On GitHub, open **Actions**, pick the latest green run on `main`, and download **takeout-windows-amd64** (or `-arm64`) under **Artifacts**. Only runs on `main` publish `takeout-*` artifacts; `test-build-*` ones come from pull requests and are not for use. You need to be signed in to GitHub, and artifacts expire after 30 days. There is no signed release yet, so:
-
-- Extract the zip, then run `Unblock-File .\takeout.exe` in that folder.
-- If SmartScreen says "Windows protected your PC", choose **More info**, then **Run anyway**. <a id="smartscreen"></a>
-- You still need ExifTool, installed as above.
-
-Then use `.\takeout.exe` wherever this guide says `.\takeout.cmd`.
+`takeout.cmd` builds `takeout.exe` the first time and works even where PowerShell blocks scripts. Use `.\takeout.cmd` wherever this guide says `./takeout.sh`.
 </details>
 
 <details>
 <summary>Git Bash, MSYS2 or WSL2</summary>
 
-PowerShell is the tested shell. From Git Bash or MSYS2, run `./takeout.cmd` rather than `./takeout.sh`.
+PowerShell is the tested shell. From Git Bash or MSYS2, run `./takeout.exe` or `./takeout.cmd` rather than `./takeout.sh`.
 
 WSL2 runs the Linux build. It works, but reading zips from `/mnt/c` or `/mnt/d` is several times slower than native Windows, and Windows creation dates are not set. Prefer the native `takeout.exe`.
 </details>
@@ -91,11 +116,21 @@ WSL2 runs the Linux build. It works, but reading zips from `/mnt/c` or `/mnt/d` 
 #### Linux
 
 ```sh
-sudo apt install golang libimage-exiftool-perl ffmpeg   # or your distribution's packages
+sudo apt install libimage-exiftool-perl ffmpeg   # or your distribution's packages
+```
+
+Download `takeout-<version>-linux-amd64.tar.gz` from the [latest release](https://github.com/asmodeoux/google-photos-takeout/releases/latest), extract it, and run `./takeout doctor` in that folder. Use `./takeout` wherever this guide says `./takeout.sh`.
+
+<details>
+<summary>Build from source instead</summary>
+
+```sh
+sudo apt install golang libimage-exiftool-perl ffmpeg
 git clone https://github.com/asmodeoux/google-photos-takeout.git
 cd google-photos-takeout
 ./takeout.sh doctor
 ```
+</details>
 
 ### 3. Check this computer
 
@@ -199,7 +234,7 @@ Import `results/<year>` folders and `results/unknown`. **Do not import `results/
 | Extract the zips into `unzipped/` | `.\takeout.cmd unzip` | `./takeout.sh unzip` |
 | Prepare a Photos import (experimental) | not available | `./takeout import-photos` (macOS) |
 
-With a prebuilt binary use `.\takeout.exe` or `./takeout`. `takeout <command> -h` lists the flags each command takes.
+With a release download, use `.\takeout.exe` or `./takeout`; when built from source, `.\takeout.cmd` or `./takeout.sh`. `takeout <command> -h` lists the flags each command takes.
 
 ## Flags
 
@@ -311,7 +346,7 @@ With a prebuilt binary use `.\takeout.exe` or `./takeout`. `takeout <command> -h
 
 ## FAQ
 
-**Does it upload anything?** No. It reads your zips and writes files on your disk.
+**Does it upload anything?** takeout itself never sends anything over the network: it reads your zips and writes files on your disk. The one exception you can ask for is Apple Photos. `import-photos` (macOS) is meant to import the library into a Photos library you name. If that is your iCloud-synced system library, Photos then uploads what was imported to iCloud, so the command refuses it unless you add `--confirm-icloud`. A separate library you create with Option-click in Photos is never uploaded. Today `import-photos` only checks the library and prints the AppleScript it will run; it does not import yet.
 
 **Can I run it again?** Yes. It resumes from the journal in `results/.takeout/` and never overwrites a finished file.
 

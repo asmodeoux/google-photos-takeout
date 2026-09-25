@@ -26,6 +26,12 @@ Branch from `main`. Open a pull request and fill in the template.
 
 `gofmt` the Go you touch. `go test ./...` must pass.
 
+## Releasing
+
+1. On a branch, set `Version` in `internal/version/version.go` and turn `## Unreleased` in CHANGELOG.md into `## <version> (<date>)`. Open a pull request and merge it when CI is green.
+2. Tag the merge commit and push the tag: `git tag v<version> && git push origin v<version>`.
+3. `.github/workflows/release.yml` checks that the tag matches the code version and the CHANGELOG, builds every platform, and publishes the GitHub Release with SHA256SUMS.txt and the CHANGELOG section as notes.
+
 ## Reporting a bug
 
 Use the bug report form. It asks for `takeout version`, the output of `takeout doctor`, your OS and disk format, and the counts from `results/.takeout/report.json`. Delete any `url` fields before pasting. Do not attach photos or zips.
