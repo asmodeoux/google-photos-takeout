@@ -22,6 +22,7 @@ try {
     Invoke-Checked "go" @("run", "./cmd/testgen", $archives) | Out-Null
 
     Invoke-Checked $Binary @("version")
+    Invoke-Checked $Binary @("doctor", "--results", $out)
     Invoke-Checked $Binary @("check", "--archives", $archives, "--results", $out)
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     Invoke-Checked $Binary @("run", "--archives", $archives, "--results", $out, "--default-tz", "Europe/Berlin", "--progress", "plain", "--quiet")

@@ -230,7 +230,7 @@ func TestAtLeast(t *testing.T) {
 
 func TestLookRejectsKeypressBuild(t *testing.T) {
 	_, err := look(`C:\Downloads\exiftool(-k).exe`, "windows")
-	if err == nil || !strings.Contains(err.Error(), "Rename it to exiftool.exe") {
+	if err == nil || !strings.Contains(err.Error(), "Rename exiftool(-k).exe to exiftool.exe") {
 		t.Fatalf("err %v", err)
 	}
 	_, err = look(filepath.Join(t.TempDir(), "nope"), "windows")

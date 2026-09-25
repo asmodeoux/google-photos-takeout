@@ -14,6 +14,7 @@ fi
 go run ./cmd/testgen "$work/archives" >/dev/null
 
 "$bin" version
+"$bin" doctor --results "$work/results"
 "$bin" check --archives "$work/archives" --results "$work/results"
 start=$(date +%s)
 "$bin" run --archives "$work/archives" --results "$work/results" --default-tz Europe/Berlin --progress plain --quiet

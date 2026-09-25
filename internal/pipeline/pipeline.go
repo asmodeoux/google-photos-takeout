@@ -61,6 +61,8 @@ type Options struct {
 	FFmpeg             string
 	FailAfter          int
 	Names              string // auto, apple, portable
+	// Launcher is how the user starts takeout, for commands in fix lines.
+	Launcher string
 	// Force is closed on a second Ctrl+C: stop ExifTool and ffmpeg at once
 	// instead of letting the files in flight finish.
 	Force  <-chan struct{}
@@ -154,7 +156,16 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		opt.Now = time.Now()
 	}
 	rep := Report{SchemaVersion: 1, Years: map[string]int{}, Sources: map[string]int{}, TZ: map[string]int{}, Formats: map[string]int{}, Import: importText()}
+	if opt.Launcher == "" {
+		opt.Launcher = DefaultLauncher(runtime.GOOS)
+	}
 	pr := progress.New(opt.Stdout, opt.Progress, opt.Quiet)
+	if err := checkRoot("archives", opt.Archives); err != nil {
+		return ExitPreflight, rep, err
+	}
+	if err := checkRoot("results", opt.Results); err != nil {
+		return ExitPreflight, rep, err
+	}
 
 	zips, err := filepath.Glob(filepath.Join(opt.Archives, "*.zip"))
 	if err != nil {
@@ -162,7 +173,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 	sort.Strings(zips)
 	if len(zips) == 0 {
-		return ExitPreflight, rep, fmt.Errorf("no zip files in %s. Put Google Takeout zips there and run again", opt.Archives)
+		return ExitPreflight, rep, errNoZips(opt.Archives, opt.Launcher, runtime.GOOS)
 	}
 	pr.Phase(fmt.Sprintf("index  %d zip(s)", len(zips)))
 	idx, err := zipindex.Open(zips)
@@ -181,15 +192,15 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 				parts = append(parts, fmt.Sprintf("export %s is missing part(s) %v", id, miss))
 			}
 		}
-		return ExitPreflight, rep, fmt.Errorf("%s. Re-download those parts before running", strings.Join(parts, "; "))
+		return ExitPreflight, rep, errMissingParts(strings.Join(parts, "; "))
 	}
 	if !opt.UnzipOnly {
 		v, err := exiftool.Version(opt.Exiftool)
 		if err != nil {
-			return ExitPreflight, rep, err
+			return ExitPreflight, rep, errExiftool(err)
 		}
 		if runtime.GOOS == "windows" && !exiftool.AtLeast(v, exiftool.MinWindowsVersion) {
-			return ExitPreflight, rep, fmt.Errorf("ExifTool %s is too old for Windows paths (need %s or newer). Upgrade with: winget upgrade --id OliverBetz.ExifTool -e", v, exiftool.MinWindowsVersion)
+			return ExitPreflight, rep, errExiftoolOld(v, runtime.GOOS)
 		}
 		rep.ExiftoolVer = v
 	}
@@ -328,14 +339,14 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	rep.Filesystem = fs.Type
 	need := estimate(groups, fs.APFS, opt.Albums)
 	if fs.Free > 0 && fs.Free < need {
-		return ExitPreflight, rep, fmt.Errorf("need about %d GB free on %s (%s), have %d GB", need/1e9, opt.Results, fs.Type, fs.Free/1e9)
+		return ExitPreflight, rep, errDiskSpace(need/1e9, fs.Free/1e9, opt.Results, fs.Type, runtime.GOOS)
 	}
 	if n := tooBigForFAT(fs.Type, groups); n > 0 {
-		return ExitPreflight, rep, fmt.Errorf("%d file(s) are 4 GiB or larger and cannot be written to %s (%s). Use an exFAT or NTFS disk for --results", n, opt.Results, fs.Type)
+		return ExitPreflight, rep, errFAT(n, opt.Results, fs.Type)
 	}
 	rule, reason, err := names.ChooseRule(opt.Names, fs.Type, runtime.GOOS == "windows")
 	if err != nil {
-		return ExitPreflight, rep, err
+		return ExitPreflight, rep, errNames(err)
 	}
 	rep.NamesRule, rep.NamesReason = rule.String(), reason
 	if !opt.Quiet {
@@ -348,6 +359,9 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 
 	release, err := state.Lock(filepath.Join(opt.Results, ".takeout"))
 	if err != nil {
+		if errors.Is(err, state.ErrLocked) {
+			err = errLocked(err)
+		}
 		return ExitPreflight, rep, err
 	}
 	defer release()
@@ -1736,10 +1750,10 @@ func checkUnzipDest(dest string, idx *zipindex.Index) error {
 		}
 	}
 	if isFAT(fs.Type) && big > 0 {
-		return fmt.Errorf("%d file(s) in the zips are 4 GiB or larger and cannot be extracted to %s (%s). Use an exFAT or NTFS disk", big, dest, fs.Type)
+		return errFAT(big, dest, fs.Type)
 	}
 	if fs.Free > 0 && fs.Free < total {
-		return fmt.Errorf("unzip needs about %d GB free on %s (%s), have %d GB", total/1e9, dest, fs.Type, fs.Free/1e9)
+		return errDiskSpace(total/1e9, fs.Free/1e9, dest, fs.Type, runtime.GOOS)
 	}
 	return nil
 }
@@ -2078,7 +2092,11 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	var rep Report
 	b, err := os.ReadFile(filepath.Join(opt.Results, ".takeout", "report.json"))
 	if err != nil {
-		return ExitPreflight, rep, fmt.Errorf("no report in %s. Run takeout run first", opt.Results)
+		abs, _ := filepath.Abs(opt.Results)
+		return ExitPreflight, rep, &PreflightError{
+			Problem: "no report in the results folder", Value: abs,
+			Fix: "run takeout run first, or pass the folder it wrote with --results", Anchor: "verify",
+		}
 	}
 	if err := json.Unmarshal(b, &rep); err != nil {
 		return ExitReconcile, rep, err

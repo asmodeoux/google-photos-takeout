@@ -20,4 +20,6 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
 fi
 
 go build -o takeout ./cmd/takeout
+TAKEOUT_LAUNCHER=./takeout.sh
+export TAKEOUT_LAUNCHER
 exec ./takeout "$@"

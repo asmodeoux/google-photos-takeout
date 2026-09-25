@@ -181,7 +181,7 @@ func look(bin, goos string) (string, error) {
 		}
 		p, err := exec.LookPath(bin)
 		if err != nil {
-			return "", fmt.Errorf("exiftool not found at %s. %s", bin, InstallHint(goos))
+			return "", &LookError{Problem: "ExifTool not found", Where: bin, Fix: InstallHint(goos)}
 		}
 		return p, nil
 	}
@@ -209,7 +209,18 @@ func look(bin, goos string) (string, error) {
 			}
 		}
 	}
-	return "", fmt.Errorf("exiftool not found. %s", InstallHint(goos))
+	return "", &LookError{Problem: "ExifTool not found", Where: "PATH and the takeout folder", Fix: InstallHint(goos)}
+}
+
+// LookError says why ExifTool could not be used and how to fix it.
+type LookError struct {
+	Problem string
+	Where   string // the path or places looked at
+	Fix     string
+}
+
+func (e *LookError) Error() string {
+	return e.Problem + " at " + e.Where + ". " + e.Fix
 }
 
 // checkNotKeypress refuses the "exiftool(-k).exe" build from the Windows zip,
@@ -222,7 +233,11 @@ func checkNotKeypress(p string) error {
 }
 
 func keypressError(p string) error {
-	return fmt.Errorf("%s waits for a key press and cannot run in batch mode. Rename it to exiftool.exe and keep the exiftool_files folder next to it", p)
+	return &LookError{
+		Problem: "this ExifTool waits for a key press and cannot run in batch mode",
+		Where:   p,
+		Fix:     "Rename exiftool(-k).exe to exiftool.exe and keep the exiftool_files folder next to it",
+	}
 }
 
 // InstallHint is the install command for the current kind of system.
