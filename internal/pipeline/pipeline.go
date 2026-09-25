@@ -98,6 +98,8 @@ type Report struct {
 	BirthTimeList  []string       `json:"birth_time_error_files,omitempty"`
 	ExportIDs      []string       `json:"export_ids,omitempty"`
 	RootFolder     string         `json:"root_folder,omitempty"`
+	SystemFiles    int            `json:"system_files_ignored,omitempty"`
+	Symlinks       int            `json:"symlinks_skipped,omitempty"`
 	NamesRule      string         `json:"names_rule,omitempty"`
 	NamesReason    string         `json:"names_reason,omitempty"`
 	AlbumRenames   []string       `json:"album_renames,omitempty"`
@@ -222,7 +224,16 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	var items []member
 	var skippedJSON []zipindex.Entry
 	pr.Phase("read sidecars")
+	var systemFiles, symlinks []zipindex.Entry
 	for _, e := range idx.Entries {
+		if e.System {
+			systemFiles = append(systemFiles, e)
+			continue
+		}
+		if e.Symlink {
+			symlinks = append(symlinks, e)
+			continue
+		}
 		if e.JSON {
 			if zipindex.IsSkippedJSON(e.Name) {
 				skippedJSON = append(skippedJSON, e)
@@ -444,7 +455,20 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 
 	rep.BirthTimeErrs, rep.BirthTimeList = times.count, times.paths
+	rep.SystemFiles, rep.Symlinks = len(systemFiles), len(symlinks)
 	fates := ledger(idx.Entries, groups, skippedJSON, screenshots, opt.IncludeTrash)
+	other := map[string]string{}
+	for _, e := range systemFiles {
+		other[e.ZipPath+"\x00"+e.EntryName] = "system-file"
+	}
+	for _, e := range symlinks {
+		other[e.ZipPath+"\x00"+e.EntryName] = "symlink-skipped"
+	}
+	for i := range fates {
+		if f, ok := other[fates[i].Zip+"\x00"+fates[i].Entry]; ok {
+			fates[i].Fate = f
+		}
+	}
 	if opt.Sample == 0 && !state.Balanced(fates, len(idx.Entries)) {
 		rep.Errors = append(rep.Errors, fmt.Sprintf("ledger %d != zip entries %d", len(fates), len(idx.Entries)))
 		fillReport(&rep, groups)
@@ -1935,6 +1959,9 @@ func unzipAll(ctx context.Context, zips []string, dest string) error {
 			if err := zipindex.CheckPath(f.Name); err != nil {
 				r.Close()
 				return err
+			}
+			if f.Mode()&fs.ModeSymlink != 0 || zipindex.IsSystemFile(f.Name) {
+				continue
 			}
 			if f.FileInfo().IsDir() {
 				_ = os.MkdirAll(filepath.Join(root, unzipRel(f.Name, "", nil)), 0o755)

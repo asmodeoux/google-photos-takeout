@@ -188,3 +188,22 @@ func TestFallbackRootForUnknownLanguage(t *testing.T) {
 		}
 	}
 }
+
+func TestIsSystemFile(t *testing.T) {
+	for name, want := range map[string]bool{
+		"Takeout/Google Photos/Photos from 2019/._a.jpg":        true,
+		"Takeout/Google Photos/Photos from 2019/.DS_Store":      true,
+		"Takeout/Google Photos/Trip/Thumbs.db":                  true,
+		"Takeout/Google Photos/Trip/Desktop.ini":                true,
+		"__MACOSX/Takeout/Google Photos/Photos from 2019/a.jpg": true,
+		"Takeout/Google Photos/Photos from 2019/a.jpg":          false,
+		"Takeout/Google Photos/Photos from 2019/_a.jpg":         false,
+		"Takeout/Google Photos/Photos from 2019/.hidden.jpg":    false,
+		"Takeout/Google Photos/Photos from 2019/thumbs.db.jpg":  false,
+		"Takeout/Google Photos/__MACOSX notes/a.jpg":            false,
+	} {
+		if got := IsSystemFile(name); got != want {
+			t.Errorf("IsSystemFile(%q) = %v, want %v", name, got, want)
+		}
+	}
+}

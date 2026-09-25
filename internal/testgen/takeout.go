@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +20,8 @@ type Takeout struct {
 	parts map[int]map[string][]byte
 	// Rows names each scenario row, for reports and failure messages.
 	Rows []string
+
+	links map[string]bool
 }
 
 // New starts an empty export.
@@ -42,6 +45,16 @@ func (t *Takeout) PutRaw(n int, entry string, data []byte) {
 		t.parts[n] = map[string][]byte{}
 	}
 	t.parts[n][entry] = data
+}
+
+// PutLink adds a symbolic-link entry under Takeout/Google Photos/folder whose
+// content is the link target, the way zip stores links.
+func (t *Takeout) PutLink(n int, folder, name, target string) {
+	t.Put(n, folder, name, []byte(target))
+	if t.links == nil {
+		t.links = map[string]bool{}
+	}
+	t.links[Root+folder+"/"+name] = true
 }
 
 // Side is the content of one JSON sidecar.
@@ -115,7 +128,7 @@ func (t *Takeout) Write(dir string) ([]string, error) {
 	var paths []string
 	for _, n := range nums {
 		p := filepath.Join(dir, fmt.Sprintf("takeout-%s-1-%03d.zip", ExportID, n))
-		if err := writeZip(p, t.parts[n]); err != nil {
+		if err := writeZip(p, t.parts[n], t.links); err != nil {
 			return nil, err
 		}
 		paths = append(paths, p)
@@ -123,7 +136,7 @@ func (t *Takeout) Write(dir string) ([]string, error) {
 	return paths, nil
 }
 
-func writeZip(p string, entries map[string][]byte) error {
+func writeZip(p string, entries map[string][]byte, links map[string]bool) error {
 	f, err := os.Create(p)
 	if err != nil {
 		return err
@@ -135,7 +148,11 @@ func writeZip(p string, entries map[string][]byte) error {
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		w, err := zw.CreateHeader(&zip.FileHeader{Name: name, Method: zip.Deflate, Modified: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)})
+		h := &zip.FileHeader{Name: name, Method: zip.Deflate, Modified: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)}
+		if links[name] {
+			h.SetMode(fs.ModeSymlink | 0o777)
+		}
+		w, err := zw.CreateHeader(h)
 		if err != nil {
 			f.Close()
 			return err

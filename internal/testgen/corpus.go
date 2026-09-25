@@ -181,6 +181,18 @@ func Corpus() *Takeout {
 	t.Row("album-files-colliding-after-sanitizing")
 	t.Photo(2, "Collide", "x?.jpg", JPEG(next()), &Side{Taken: at(2019, 12, 6, 9, 0, 0)})
 	t.Photo(2, "Collide", "x*.jpg", JPEG(next()), &Side{Taken: at(2019, 12, 6, 9, 0, 1)})
+
+	// Files an OS adds when a Takeout is unzipped and zipped again on a Mac or
+	// opened in Windows Explorer.
+	t.Row("gpth-203-appledouble-files-ignored")
+	t.Put(1, y19, "._gps-moscow.jpg", []byte("\x00\x05\x16\x07AppleDouble"))
+	t.PutRaw(1, "__MACOSX/Takeout/Google Photos/"+y19+"/._edited.jpg", []byte("\x00\x05\x16\x07"))
+	t.Row("gpth-297-ds-store-and-thumbs-db-ignored")
+	t.Put(1, y19, ".DS_Store", []byte("Bud1"))
+	t.Put(1, y19, "Thumbs.db", []byte("thumbs"))
+	t.Put(2, "Trip", "desktop.ini", []byte("[.ShellClassInfo]"))
+	t.Row("symlink-entry-skipped")
+	t.PutLink(1, y19, "link.jpg", "../../../etc/passwd")
 	return t
 }
 

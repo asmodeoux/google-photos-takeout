@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"context"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/asmodeoux/google-photos-takeout/internal/names"
 	"github.com/asmodeoux/google-photos-takeout/internal/state"
+	"github.com/asmodeoux/google-photos-takeout/internal/testgen"
 	"github.com/asmodeoux/google-photos-takeout/internal/zipindex"
 )
 
@@ -140,5 +143,39 @@ func TestUnzipRelPortableAndUnique(t *testing.T) {
 	}
 	if c != filepath.FromSlash("Takeout/Google Photos/CON_/CON_.jpg") {
 		t.Fatal(c)
+	}
+}
+
+func TestUnzipSkipsSymlinksAndSystemFiles(t *testing.T) {
+	dir := t.TempDir()
+	zips, err := testgen.Corpus().Write(filepath.Join(dir, "archives"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "unzipped")
+	if err := unzipAll(context.Background(), zips, dest); err != nil {
+		t.Fatal(err)
+	}
+	var files int
+	err = filepath.WalkDir(dest, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Type()&fs.ModeSymlink != 0 {
+			t.Errorf("symlink created: %s", p)
+		}
+		if d.Name() == "__MACOSX" || (!d.IsDir() && zipindex.IsSystemName(d.Name())) {
+			t.Errorf("system file unzipped: %s", p)
+		}
+		if !d.IsDir() {
+			files++
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if files == 0 {
+		t.Fatal("nothing unzipped")
 	}
 }

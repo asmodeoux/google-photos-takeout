@@ -294,6 +294,8 @@
     "names_rule": "apple",
     "placeholders": 0,
     "sidecars": 51,
+    "symlinks_skipped": 1,
+    "system_files_ignored": 5,
     "tag_errors": 0,
     "timezone_steps": {
       "default": 33,

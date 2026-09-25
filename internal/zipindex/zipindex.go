@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"io/fs"
 	"path"
 	"regexp"
 	"sort"
@@ -35,6 +36,11 @@ type Entry struct {
 	Size      uint64
 	CRC32     uint32
 	JSON      bool
+	// System is an operating-system file such as ._x.jpg or .DS_Store, or an
+	// entry under __MACOSX/, which appear when a Takeout is re-zipped on a Mac.
+	System bool
+	// Symlink is a zip entry stored as a symbolic link. It is never created.
+	Symlink bool
 }
 
 // Index is the merged view of every zip.
@@ -110,7 +116,8 @@ func Open(paths []string) (*Index, error) {
 			rel, baseName, ok := splitGooglePhotos(name)
 			if !ok {
 				if strings.HasPrefix(name, "Takeout/") && strings.Count(name, "/") >= 2 {
-					others = append(others, Entry{ZipPath: p, EntryName: name, Size: f.UncompressedSize64, CRC32: f.CRC32})
+					others = append(others, Entry{ZipPath: p, EntryName: name, Size: f.UncompressedSize64, CRC32: f.CRC32,
+						System: IsSystemFile(name), Symlink: f.Mode()&fs.ModeSymlink != 0})
 				}
 				continue
 			}
@@ -122,6 +129,8 @@ func Open(paths []string) (*Index, error) {
 				Size:      f.UncompressedSize64,
 				CRC32:     f.CRC32,
 				JSON:      strings.HasSuffix(strings.ToLower(baseName), ".json"),
+				System:    IsSystemFile(name),
+				Symlink:   f.Mode()&fs.ModeSymlink != 0,
 			}
 			idx.Entries = append(idx.Entries, e)
 			info.Files++
@@ -216,6 +225,30 @@ func genericYear(folder string) string {
 		return ""
 	}
 	return m[1]
+}
+
+// IsSystemFile reports files an operating system adds next to photos:
+// macOS AppleDouble "._" files, .DS_Store, anything under __MACOSX/, and
+// Windows Thumbs.db and desktop.ini.
+func IsSystemFile(name string) bool {
+	for _, seg := range strings.Split(name, "/") {
+		if seg == "__MACOSX" {
+			return true
+		}
+	}
+	return IsSystemName(path.Base(name))
+}
+
+// IsSystemName is IsSystemFile for a single file name.
+func IsSystemName(base string) bool {
+	if strings.HasPrefix(base, "._") {
+		return true
+	}
+	switch strings.ToLower(base) {
+	case ".ds_store", "thumbs.db", "desktop.ini":
+		return true
+	}
+	return false
 }
 
 // CheckPath rejects absolute paths and ".." segments (zip slip).

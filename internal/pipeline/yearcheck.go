@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/asmodeoux/google-photos-takeout/internal/exiftool"
+	"github.com/asmodeoux/google-photos-takeout/internal/zipindex"
 )
 
 // YearMismatches lists files under a four-digit year folder whose embedded
@@ -24,7 +25,7 @@ func YearMismatches(clients []*exiftool.Client, root string) ([]string, error) {
 			continue
 		}
 		err := filepath.WalkDir(filepath.Join(root, e.Name()), func(p string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() {
+			if err != nil || d.IsDir() || zipindex.IsSystemName(d.Name()) {
 				return nil
 			}
 			abs, err := filepath.Abs(p)
