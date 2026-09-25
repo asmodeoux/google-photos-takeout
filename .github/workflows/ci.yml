@@ -28,31 +28,7 @@ jobs:
         with:
           go-version: "1.26"
 
-      - name: ExifTool (macOS, Linux)
-        if: runner.os != 'Windows'
-        shell: bash
-        run: |
-          set -eu
-          f="Image-ExifTool-${EXIFTOOL_VERSION}.tar.gz"
-          curl -fsSL -o "$f" "https://sourceforge.net/projects/exiftool/files/$f/download"
-          echo "${EXIFTOOL_TAR_SHA256}  $f" | shasum -a 256 -c -
-          tar xzf "$f"
-          echo "$PWD/Image-ExifTool-${EXIFTOOL_VERSION}" >> "$GITHUB_PATH"
-
-      - name: ExifTool (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          $f = "exiftool-$env:EXIFTOOL_VERSION`_64.zip"
-          Invoke-WebRequest -Uri "https://sourceforge.net/projects/exiftool/files/$f/download" -OutFile $f -UserAgent "curl"
-          $hash = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
-          if ($hash -ne $env:EXIFTOOL_WIN_SHA256) { throw "ExifTool hash $hash does not match" }
-          Expand-Archive $f -DestinationPath exiftool
-          $dir = (Get-ChildItem exiftool -Directory | Select-Object -First 1).FullName
-          if (-not $dir) { $dir = (Resolve-Path exiftool).Path }
-          Rename-Item (Join-Path $dir "exiftool(-k).exe") "exiftool.exe"
-          if (-not (Test-Path (Join-Path $dir "exiftool_files"))) { throw "exiftool_files missing next to exiftool.exe" }
-          Add-Content $env:GITHUB_PATH $dir
+      - uses: ./.github/actions/exiftool
 
       - name: ffmpeg
         shell: bash
@@ -125,14 +101,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
-      - name: ExifTool
-        run: |
-          set -eu
-          f="Image-ExifTool-${EXIFTOOL_VERSION}.tar.gz"
-          curl -fsSL -o "$f" "https://sourceforge.net/projects/exiftool/files/$f/download"
-          echo "${EXIFTOOL_TAR_SHA256}  $f" | shasum -a 256 -c -
-          tar xzf "$f"
-          echo "$PWD/Image-ExifTool-${EXIFTOOL_VERSION}" >> "$GITHUB_PATH"
+      - uses: ./.github/actions/exiftool
       - uses: actions/download-artifact@v4
         with:
           name: windows-results
@@ -145,6 +114,70 @@ jobs:
           if grep -q '\\\\' windows-results/.takeout/state.jsonl; then echo "journal has backslash paths" >&2; exit 1; fi
           go build -o takeout ./cmd/takeout
           ./takeout verify --results windows-results
+
+  # Prebuilt binaries for people who do not want to install Go. Artifacts, not
+  # a release: they need a GitHub sign-in to download and expire.
+  release-artifacts:
+    needs: [test, cross-os-verify, privacy]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - name: Build
+        shell: bash
+        run: |
+          set -eu
+          ver=$(git describe --tags --always)
+          for target in windows/amd64 windows/arm64 darwin/arm64 darwin/amd64 linux/amd64; do
+            os=${target%/*}; arch=${target#*/}
+            dir="dist/takeout-$os-$arch"
+            exe=takeout; [ "$os" = windows ] && exe=takeout.exe
+            mkdir -p "$dir"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X github.com/asmodeoux/google-photos-takeout/internal/version.Version=$ver" \
+              -o "$dir/$exe" ./cmd/takeout
+            cp scripts/README-download.txt "$dir/"
+          done
+          ls -lR dist
+      - uses: actions/upload-artifact@v4
+        with: { name: takeout-windows-amd64, path: dist/takeout-windows-amd64, retention-days: 30 }
+      - uses: actions/upload-artifact@v4
+        with: { name: takeout-windows-arm64, path: dist/takeout-windows-arm64, retention-days: 30 }
+      - uses: actions/upload-artifact@v4
+        with: { name: takeout-darwin-arm64, path: dist/takeout-darwin-arm64, retention-days: 30 }
+      - uses: actions/upload-artifact@v4
+        with: { name: takeout-darwin-amd64, path: dist/takeout-darwin-amd64, retention-days: 30 }
+      - uses: actions/upload-artifact@v4
+        with: { name: takeout-linux-amd64, path: dist/takeout-linux-amd64, retention-days: 30 }
+
+  # The downloadable takeout.exe itself must pass the smoke test.
+  smoke-prebuilt:
+    needs: release-artifacts
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+      - uses: ./.github/actions/exiftool
+      - name: ffmpeg
+        run: choco install ffmpeg -y --no-progress
+      - uses: actions/download-artifact@v4
+        with:
+          name: takeout-windows-amd64
+          path: prebuilt
+      - name: Smoke test the prebuilt takeout.exe
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path prebuilt\takeout.exe).Path
+          $v = & $exe version
+          Write-Host "version $v"
+          if ($v -eq "0.1.0") { throw "version was not set at build time" }
+          scripts/smoke.ps1 -Binary $exe
 
   privacy:
     runs-on: ubuntu-latest
