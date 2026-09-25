@@ -11,16 +11,20 @@ if [ -z "$bin" ]; then
   go build -o "$work/takeout" ./cmd/takeout
   bin="$work/takeout"
 fi
+case "$bin" in /*) ;; *) bin="$PWD/$bin" ;; esac
+case "${SMOKE_RESULTS:-}" in ""|/*) ;; *) SMOKE_RESULTS="$PWD/$SMOKE_RESULTS" ;; esac
 go run ./cmd/testgen "$work/archives" >/dev/null
 
+# Relative folders, as with the defaults: archives/ and results/ here.
+cd "$work"
 "$bin" version
-"$bin" doctor --results "$work/results"
-"$bin" check --archives "$work/archives" --results "$work/results"
+"$bin" doctor
+"$bin" check
 start=$(date +%s)
-"$bin" run --archives "$work/archives" --results "$work/results" --default-tz Europe/Berlin --progress plain --quiet
+"$bin" run --default-tz Europe/Berlin --progress plain --quiet
 echo "run took $(( $(date +%s) - start ))s"
-"$bin" verify --results "$work/results"
-"$bin" status --results "$work/results"
+"$bin" verify
+"$bin" status
 
 report="$work/results/.takeout/report.json"
 sed -n '/"seconds"/,/}/p' "$report"

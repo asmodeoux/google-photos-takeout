@@ -25,15 +25,23 @@ try {
     $archives = Join-Path $work "archives"
     $out = Join-Path $work "results"
     Invoke-Checked "go" @("run", "./cmd/testgen", $archives) | Out-Null
+    $Binary = (Resolve-Path $Binary).Path
+    if ($Results -ne "") { $Results = [System.IO.Path]::GetFullPath($Results) }
 
-    Invoke-Checked $Binary @("version")
-    Invoke-Checked $Binary @("doctor", "--results", $out)
-    Invoke-Checked $Binary @("check", "--archives", $archives, "--results", $out)
-    $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    Invoke-Checked $Binary @("run", "--archives", $archives, "--results", $out, "--default-tz", "Europe/Berlin", "--progress", "plain", "--quiet")
-    Write-Host "run took $([int]$sw.Elapsed.TotalSeconds)s"
-    Invoke-Checked $Binary @("verify", "--results", $out)
-    Invoke-Checked $Binary @("status", "--results", $out)
+    # Relative folders, as with the defaults: archives\ and results\ here.
+    Push-Location $work
+    try {
+        Invoke-Checked $Binary @("version")
+        Invoke-Checked $Binary @("doctor")
+        Invoke-Checked $Binary @("check")
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Invoke-Checked $Binary @("run", "--default-tz", "Europe/Berlin", "--progress", "plain", "--quiet")
+        Write-Host "run took $([int]$sw.Elapsed.TotalSeconds)s"
+        Invoke-Checked $Binary @("verify")
+        Invoke-Checked $Binary @("status")
+    } finally {
+        Pop-Location
+    }
 
     $report = Get-Content (Join-Path $out ".takeout\report.json") -Raw | ConvertFrom-Json
     Write-Host "seconds: $($report.seconds | ConvertTo-Json -Compress)  files per second: $($report.files_per_second)  retries: $($report.retries | ConvertTo-Json -Compress)"
