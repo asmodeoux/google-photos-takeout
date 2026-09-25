@@ -250,6 +250,8 @@ func knownExt(e string) bool {
 var windowsStyle = map[string]bool{
 	"ntfs": true, "exfat": true, "fat": true, "fat12": true, "fat16": true, "fat32": true,
 	"vfat": true, "msdos": true, "refs": true, "fuseblk": true, "ntfs3": true,
+	// Windows drives seen from WSL2, and SMB shares, which are usually NTFS.
+	"9p": true, "v9fs": true, "drvfs": true, "cifs": true, "smb": true, "smb2": true, "smbfs": true,
 }
 
 // ChooseRule picks the naming rule for --names (auto, apple or portable) and the
@@ -263,7 +265,9 @@ func ChooseRule(flag, fsType string, windows bool) (Rule, string, error) {
 	}
 	switch flag {
 	case "", "auto":
-		if needsPortable {
+		// An unknown filesystem may be a Windows one; portable names are
+		// safe everywhere.
+		if needsPortable || fs == "" || strings.HasPrefix(fs, "0x") {
 			return Portable, where, nil
 		}
 		return Apple, where, nil

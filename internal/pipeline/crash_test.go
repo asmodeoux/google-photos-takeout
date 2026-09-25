@@ -284,3 +284,50 @@ func TestCtrlCInLatePhasesResumesCleanly(t *testing.T) {
 		})
 	}
 }
+
+// A forced stop during a tag write leaves "<file>_exiftool_tmp" next to it.
+func TestLeftoverExifToolTempDoesNotBlockRetag(t *testing.T) {
+	requireTools(t, "exiftool")
+	dir := t.TempDir()
+	tk := testgen.New()
+	tk.Photo(1, "Photos from 2019", "a.jpg", testgen.JPEG(1), &testgen.Side{
+		Taken: time.Date(2019, 3, 1, 9, 0, 0, 0, time.UTC), Description: "caption"})
+	arch := filepath.Join(dir, "archives")
+	if _, err := tk.Write(arch); err != nil {
+		t.Fatal(err)
+	}
+	results := filepath.Join(dir, "results")
+	runOK(t, arch, results)
+	tmp := filepath.Join(results, "2019", "a.jpg_exiftool_tmp")
+	os.WriteFile(tmp, []byte("half-written"), 0o644)
+	rep := runOK(t, arch, results)
+	if rep.TagErrors != 0 {
+		t.Fatalf("tag errors %d", rep.TagErrors)
+	}
+	if _, err := os.Stat(tmp); err == nil {
+		t.Fatal("temporary file left in the library")
+	}
+}
+
+// Counts in the report are the same on a rerun as on the first run.
+func TestRerunReportsTheSameCounts(t *testing.T) {
+	requireTools(t, "exiftool", "ffmpeg")
+	dir := t.TempDir()
+	arch := filepath.Join(dir, "archives")
+	if _, err := testgen.Corpus().Write(arch); err != nil {
+		t.Fatal(err)
+	}
+	results := filepath.Join(dir, "results")
+	first := runOK(t, arch, results)
+	second := runOK(t, arch, results)
+	if first.Motions == 0 {
+		t.Fatal("the corpus motion photo was not counted")
+	}
+	type counts struct{ Media, Library, Unknown, LivePairs, Motions, Untagged, WithGPS int }
+	c := func(r Report) counts {
+		return counts{r.Media, r.Library, r.Unknown, r.LivePairs, r.Motions, r.Untagged, r.WithGPS}
+	}
+	if c(first) != c(second) {
+		t.Fatalf("first %+v\nrerun %+v", c(first), c(second))
+	}
+}

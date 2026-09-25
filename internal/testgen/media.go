@@ -194,3 +194,18 @@ func BMP(seed int) []byte {
 	b.Write([]byte{byte(seed), byte(seed >> 8), 0xff, 0})
 	return b.Bytes()
 }
+
+// MotionJPEG returns a JPEG with Google's MotionPhoto XMP marker, as a Pixel
+// motion photo has (without the embedded video).
+func MotionJPEG(seed int) []byte {
+	j := JPEG(seed)
+	xmp := "http://ns.adobe.com/xap/1.0/\x00" +
+		`<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">` +
+		`<rdf:Description xmlns:GCamera="http://ns.google.com/photos/1.0/camera/" GCamera:MotionPhoto="1"/>` +
+		`</rdf:RDF></x:xmpmeta>`
+	seg := []byte{0xff, 0xe1, byte((len(xmp) + 2) >> 8), byte(len(xmp) + 2)}
+	out := append([]byte{}, j[:2]...)
+	out = append(out, seg...)
+	out = append(out, xmp...)
+	return append(out, j[2:]...)
+}

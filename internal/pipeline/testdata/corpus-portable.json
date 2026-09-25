@@ -123,6 +123,10 @@
       "CreateDate": "2019:09:14 14:00:00Z",
       "CreationDate": "2019:09:14 16:00:00+02:00"
     },
+    "2019/PXL_20190926_090000000.MP.jpg": {
+      "DateTimeOriginal": "2019:09:26 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
     "2019/RAW_0001.dng": {
       "DateTimeOriginal": "2019:09:20 02:00:00",
       "GPSLatitude": "34.0522",
@@ -345,7 +349,7 @@
       "filename": 5,
       "filename-date": 2,
       "json-creation": 2,
-      "json-taken": 57,
+      "json-taken": 58,
       "live": 2
     },
     "errors": null,
@@ -371,7 +375,7 @@
       "cr3": 1,
       "gif": 1,
       "heic": 4,
-      "jpeg": 44,
+      "jpeg": 45,
       "mov": 6,
       "mp4": 6,
       "png": 3,
@@ -379,22 +383,23 @@
       "tiff": 1,
       "webp": 1
     },
-    "library": 68,
+    "library": 69,
     "live_pairs": 5,
-    "media": 74,
+    "media": 75,
+    "motion_photos": 1,
     "names_rule": "portable",
     "placeholders": 0,
-    "sidecars": 63,
+    "sidecars": 64,
     "symlinks_skipped": 1,
     "system_files_ignored": 5,
     "tag_errors": 0,
     "timezone_steps": {
-      "default": 42,
+      "default": 43,
       "filename": 5,
       "gps": 11,
       "neighbor": 10
     },
-    "unique": 72,
+    "unique": 73,
     "unknown": 3,
     "untagged": 3,
     "years": {
@@ -402,7 +407,7 @@
       "2016": 1,
       "2017": 1,
       "2018": 1,
-      "2019": 64
+      "2019": 65
     }
   }
 }

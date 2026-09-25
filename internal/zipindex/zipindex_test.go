@@ -226,3 +226,15 @@ func TestIsSystemFile(t *testing.T) {
 		}
 	}
 }
+
+func TestLocalizedTrashAndArchive(t *testing.T) {
+	for folder, want := range map[string]FolderClass{
+		"Papelera": ClassTrash, "Корзина": ClassTrash, "ゴミ箱": ClassTrash, "Kosz": ClassTrash,
+		"Archiv": ClassLibrary, "Archivio": ClassLibrary, "Архив": ClassLibrary,
+		"Kosz na plaży": ClassAlbum, "Summer": ClassAlbum,
+	} {
+		if got := Classify(folder); got != want {
+			t.Errorf("Classify(%q) = %v, want %v", folder, got, want)
+		}
+	}
+}

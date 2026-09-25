@@ -190,6 +190,9 @@ func Corpus() *Takeout {
 	t.Photo(1, y19, "old-camera.avi", AVI(next()), &Side{Taken: at(2019, 9, 24, 9, 0, 0)})
 	t.Photo(1, y19, "scan.bmp", BMP(next()), &Side{Taken: at(2019, 9, 25, 9, 0, 0)})
 
+	t.Row("motion-photo-jpeg-counted")
+	t.Photo(1, y19, "PXL_20190926_090000000.MP.jpg", MotionJPEG(next()), &Side{Taken: at(2019, 9, 26, 9, 0, 0)})
+
 	t.Row("gif-gets-xmp-date-only")
 	t.Photo(1, y19, "anim.gif", GIF(next()), &Side{Taken: at(2019, 10, 1, 9, 0, 0)})
 

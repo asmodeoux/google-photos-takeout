@@ -81,7 +81,7 @@ var (
 		"Google Kuvat": true, "Google Fotók": true, "Google Fotoğraflar": true,
 		"Google フォト": true, "Google 포토": true, "Google 相片": true, "Google 照片": true,
 	}
-	partRe = regexp.MustCompile(`takeout-(\d{8}T\d{6}Z).*?-(\d+)\.zip$`)
+	partRe = regexp.MustCompile(`(?i)takeout-(\d{8}T\d{6}Z).*?-(\d+)\.zip$`)
 )
 
 // Open reads central directories only. File bodies are not hashed or CRC-checked here.
@@ -298,16 +298,36 @@ func Classify(folder string) FolderClass {
 	if folder == "" {
 		return ClassLibrary
 	}
-	switch strings.ToLower(folder) {
-	case "trash", "bin", "papierkorb", "corbeille":
+	lower := strings.ToLower(folder)
+	if trashNames[lower] {
 		return ClassTrash
-	case "archive", "locked folder", "failed videos":
+	}
+	if libraryNames[lower] {
 		return ClassLibrary
 	}
 	if isYear(folder) {
 		return ClassLibrary
 	}
 	return ClassAlbum
+}
+
+// trashNames are Google Photos' Trash folder in the export languages takeout
+// knows. In an export in another language the Trash folder looks like an
+// album; --include-trash is then the default behavior for it.
+var trashNames = map[string]bool{
+	"trash": true, "bin": true, "papierkorb": true, "corbeille": true, "papelera": true,
+	"cestino": true, "lixeira": true, "lixo": true, "prullenbak": true, "kosz": true,
+	"корзина": true, "кошик": true, "koš": true, "papperskorg": true, "papirkurv": true,
+	"roskakori": true, "çöp kutusu": true, "kuka": true, "ゴミ箱": true, "휴지통": true,
+	"垃圾桶": true, "回收站": true, "垃圾箱": true,
+}
+
+// libraryNames are folders that hold library photos rather than an album:
+// Archive (in the known languages), Locked Folder, and Failed Videos.
+var libraryNames = map[string]bool{
+	"archive": true, "locked folder": true, "failed videos": true,
+	"archiv": true, "archives": true, "archivo": true, "archivio": true, "arquivo": true,
+	"archief": true, "archiwum": true, "архив": true, "архів": true, "アーカイブ": true, "보관함": true,
 }
 
 func isYear(name string) bool {

@@ -226,11 +226,10 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		return ExitPreflight, rep, err
 	}
 
-	zips, err := filepath.Glob(filepath.Join(opt.Archives, "*.zip"))
-	if err != nil {
+	zips, err := listZips(opt.Archives)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return ExitPreflight, rep, err
 	}
-	sort.Strings(zips)
 	if len(zips) == 0 {
 		return ExitPreflight, rep, errNoZips(opt.Archives, opt.Launcher, runtime.GOOS)
 	}
@@ -609,6 +608,24 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	return ExitOK, rep, nil
 }
 
+// listZips returns the .zip files in dir, in name order. It reads the folder
+// instead of globbing, so a folder named "Takeout [2024]" works, and it
+// accepts .ZIP.
+func listZips(dir string) ([]string, error) {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []string
+	for _, e := range ents {
+		if !e.IsDir() && strings.EqualFold(filepath.Ext(e.Name()), ".zip") {
+			out = append(out, filepath.Join(dir, e.Name()))
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // errFailed says that some media never reached the library.
 func errFailed(n int, results string) error {
 	return fmt.Errorf("%d file(s) from the zips are not in the library. failed_files in %s lists each one and why; a damaged zip part must be downloaded again. Run the same command after fixing it",
@@ -963,6 +980,7 @@ func extractGroup(readers map[string]*zipSet, g *group, results string, journal 
 			if g.trueType == "" || g.trueType == "unknown" {
 				g.trueType = kindFromExt(g.members[g.canon].Name)
 			}
+			g.motion = isMotionPhoto(g.trueType, p, g.members[g.canon].Name)
 			return nil
 		}
 	}
@@ -1029,16 +1047,27 @@ func extractGroup(readers map[string]*zipSet, g *group, results string, journal 
 		return err
 	}
 	g.staged = final
-	if g.trueType == "jpeg" {
-		b, _ := os.ReadFile(final)
-		if len(b) > 256*1024 {
-			b = b[:256*1024]
-		}
-		if bytesContains(b, []byte("MotionPhoto")) || strings.HasSuffix(strings.ToLower(m.Name), ".mp") {
-			g.motion = true
-		}
-	}
+	g.motion = isMotionPhoto(g.trueType, final, m.Name)
 	return journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "staged"})
+}
+
+// isMotionPhoto reports a Google Motion Photo: a JPEG with a video inside,
+// marked "MotionPhoto" in its XMP near the start of the file.
+func isMotionPhoto(kind, p, name string) bool {
+	if kind != "jpeg" {
+		return false
+	}
+	if strings.HasSuffix(strings.ToLower(name), ".mp") {
+		return true
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	b := make([]byte, 256*1024)
+	n, _ := io.ReadFull(f, b)
+	return bytesContains(b[:n], []byte("MotionPhoto"))
 }
 
 func bytesContains(b, sub []byte) bool {
@@ -1453,6 +1482,9 @@ func writeTags(c tagRunner, results string, g *group, id int, times *timeLog) er
 	if err != nil {
 		return err
 	}
+	// A forced stop can leave ExifTool's temporary copy next to a file already
+	// in the library; ExifTool then refuses to write that file again.
+	_ = os.Remove(g.staged + "_exiftool_tmp")
 	needUpdate := plan.WriteDates || plan.WriteGPS || plan.SetContentID != ""
 	if err := runWrite(c, args, id+1, needUpdate, time.Sleep); err != nil {
 		return err

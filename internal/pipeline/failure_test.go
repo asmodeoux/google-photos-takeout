@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -137,5 +138,28 @@ func TestVerifyAfterInterruptedRunIsNotOK(t *testing.T) {
 	}
 	if vcode, _, _ := Verify(context.Background(), Options{Results: results}); vcode == ExitOK {
 		t.Fatal("verify passed on a stale report")
+	}
+}
+
+// A folder name with glob characters, and .ZIP in capitals, still find the zips.
+func TestArchivesFolderWithBracketsAndUpperCaseZip(t *testing.T) {
+	requireTools(t, "exiftool")
+	dir := t.TempDir()
+	arch := writeTakeout(t, dir, map[string][]byte{"a.jpg": testgen.JPEG(1)})
+	odd := filepath.Join(dir, "Takeout [2024]*?")
+	if runtime.GOOS == "windows" {
+		odd = filepath.Join(dir, "Takeout [2024]")
+	}
+	if err := os.Rename(arch, odd); err != nil {
+		t.Fatal(err)
+	}
+	zips, _ := os.ReadDir(odd)
+	for _, z := range zips {
+		os.Rename(filepath.Join(odd, z.Name()), filepath.Join(odd, strings.TrimSuffix(z.Name(), ".zip")+".ZIP"))
+	}
+	results := filepath.Join(dir, "results")
+	code, rep, err := Run(context.Background(), testOptions(odd, results))
+	if code != ExitOK || rep.Library != 1 {
+		t.Fatalf("exit %d library %d: %v", code, rep.Library, err)
 	}
 }
