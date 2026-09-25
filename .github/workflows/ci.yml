@@ -3,9 +3,101 @@ name: ci
 on:
   push:
   pull_request:
+  schedule:
+    # Weekly: the pinned ExifTool download must still exist and match its hash.
+    - cron: "17 5 * * 1"
+
+env:
+  EXIFTOOL_VERSION: "13.59"
+  # From https://sourceforge.net/projects/exiftool/files/checksums-13.59.txt
+  EXIFTOOL_TAR_SHA256: 668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a
+  EXIFTOOL_WIN_SHA256: 44b512b25af500724ba579d0a53c8fc5851628b692dd5e5d94ae4a15c2cba9ec
+  # A missing ExifTool or ffmpeg fails the tests instead of skipping them.
+  TAKEOUT_REQUIRE_TOOLS: "1"
 
 jobs:
   test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+
+      - name: ExifTool (macOS, Linux)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -eu
+          f="Image-ExifTool-${EXIFTOOL_VERSION}.tar.gz"
+          curl -fsSL -o "$f" "https://sourceforge.net/projects/exiftool/files/$f/download"
+          echo "${EXIFTOOL_TAR_SHA256}  $f" | shasum -a 256 -c -
+          tar xzf "$f"
+          echo "$PWD/Image-ExifTool-${EXIFTOOL_VERSION}" >> "$GITHUB_PATH"
+
+      - name: ExifTool (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $f = "exiftool-$env:EXIFTOOL_VERSION`_64.zip"
+          Invoke-WebRequest -Uri "https://sourceforge.net/projects/exiftool/files/$f/download" -OutFile $f -UserAgent "curl"
+          $hash = (Get-FileHash $f -Algorithm SHA256).Hash.ToLower()
+          if ($hash -ne $env:EXIFTOOL_WIN_SHA256) { throw "ExifTool hash $hash does not match" }
+          Expand-Archive $f -DestinationPath exiftool
+          $dir = (Get-ChildItem exiftool -Directory | Select-Object -First 1).FullName
+          if (-not $dir) { $dir = (Resolve-Path exiftool).Path }
+          Rename-Item (Join-Path $dir "exiftool(-k).exe") "exiftool.exe"
+          if (-not (Test-Path (Join-Path $dir "exiftool_files"))) { throw "exiftool_files missing next to exiftool.exe" }
+          Add-Content $env:GITHUB_PATH $dir
+
+      - name: ffmpeg
+        shell: bash
+        run: |
+          case "$RUNNER_OS" in
+            macOS) brew install ffmpeg ;;
+            Linux) sudo apt-get update -q && sudo apt-get install -y -q ffmpeg ;;
+            Windows) choco install ffmpeg -y --no-progress ;;
+          esac
+
+      - name: Tool versions
+        shell: bash
+        run: |
+          exiftool -ver
+          ffmpeg -hide_banner -version | head -1
+          test "$(exiftool -ver)" = "$EXIFTOOL_VERSION"
+
+      - name: gofmt
+        shell: bash
+        run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test ./...
+      - name: go test -race
+        if: runner.os != 'Windows'
+        run: go test -race ./...
+
+      - name: Smoke test (macOS, Linux)
+        if: runner.os != 'Windows'
+        run: scripts/smoke.sh
+      - name: Smoke test (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts/smoke.ps1 -Results "$env:RUNNER_TEMP\windows-results"
+      - name: Keep Windows results for the macOS verify
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-results
+          path: ${{ runner.temp }}/windows-results
+          include-hidden-files: true
+          retention-days: 3
+
+  # A library built on Windows must pass verify on a Mac, where it is imported.
+  cross-os-verify:
+    needs: test
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -13,22 +105,25 @@ jobs:
         with:
           go-version: "1.26"
       - name: ExifTool
-        run: brew install exiftool
-      - run: go vet ./...
-      - run: go test ./...
-
-  build:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+        run: |
+          set -eu
+          f="Image-ExifTool-${EXIFTOOL_VERSION}.tar.gz"
+          curl -fsSL -o "$f" "https://sourceforge.net/projects/exiftool/files/$f/download"
+          echo "${EXIFTOOL_TAR_SHA256}  $f" | shasum -a 256 -c -
+          tar xzf "$f"
+          echo "$PWD/Image-ExifTool-${EXIFTOOL_VERSION}" >> "$GITHUB_PATH"
+      - uses: actions/download-artifact@v4
         with:
-          go-version: "1.26"
-      - run: go test ./...
-      - run: go build -o takeout ./cmd/takeout
+          name: windows-results
+          path: windows-results
+      - name: Verify on macOS
+        run: |
+          set -eu
+          test -f windows-results/.takeout/report.json
+          test -f windows-results/.takeout/state.jsonl
+          if grep -q '\\\\' windows-results/.takeout/state.jsonl; then echo "journal has backslash paths" >&2; exit 1; fi
+          go build -o takeout ./cmd/takeout
+          ./takeout verify --results windows-results
 
   privacy:
     runs-on: ubuntu-latest
@@ -41,4 +136,9 @@ jobs:
             echo "personal Takeout paths are tracked" >&2
             exit 1
           fi
+          if git ls-files | grep -iE '\.(jpe?g|png|gif|webp|heic|heif|mov|mp4|m4v|3gp|mkv|webm|avi)$' | grep -v '^internal/testgen/testdata/'; then
+            echo "media files outside internal/testgen/testdata" >&2
+            exit 1
+          fi
           git ls-files -z | xargs -0 -r du -b | awk '$1 > 1000000 { print; bad=1 } END { exit bad }'
+          git ls-files -z internal/testgen/testdata | xargs -0 -r du -b | awk '$1 > 30000 { print "fixture over 30 KB: " $0; bad=1 } END { exit bad }'

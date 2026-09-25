@@ -1,0 +1,10 @@
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.heic binary
+*.webp binary
+*.mp4 binary
+*.mov binary
+*.3gp binary
+*.mkv binary
+*.webm binary
