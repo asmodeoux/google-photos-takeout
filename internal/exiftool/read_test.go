@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/asmodeoux/google-photos-takeout/internal/dates"
 )
 
 func TestPathKeyWindows(t *testing.T) {
@@ -234,5 +236,39 @@ func TestLookRejectsKeypressBuild(t *testing.T) {
 	_, err = look(filepath.Join(t.TempDir(), "nope"), "windows")
 	if err == nil || !strings.Contains(err.Error(), "winget install") {
 		t.Fatalf("err %v", err)
+	}
+}
+
+// The QuickTime dates must hold UTC whatever the computer's timezone is.
+func TestVideoUTCDateIgnoresLocalTimezone(t *testing.T) {
+	requireExiftool(t)
+	t.Setenv("TZ", "America/New_York")
+	src, err := os.ReadFile("../testgen/testdata/clip1.mov")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := filepath.Join(t.TempDir(), "v.mov")
+	os.WriteFile(p, src, 0o644)
+	when := dates.When{Instant: time.Date(2019, 9, 1, 1, 0, 0, 0, time.UTC), OK: true, Offset: 9 * time.Hour, OffsetKnown: true}
+	args, err := Args(Plan{Path: p, Kind: "mov", WriteDates: true, When: when})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if r, err := c.Run(args, 1); err != nil || !Updated(r.Out) {
+		t.Fatalf("%v %+v", err, r)
+	}
+	// Read the stored value without QuickTimeUTC, so no conversion happens.
+	r, err := c.Run([]string{"-s3", "-QuickTime:CreateDate", "-Keys:CreationDate", p}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(r.Out), "\n")
+	if len(lines) != 2 || lines[0] != "2019:09:01 01:00:00" || lines[1] != "2019:09:01 10:00:00+09:00" {
+		t.Fatalf("stored %q", lines)
 	}
 }

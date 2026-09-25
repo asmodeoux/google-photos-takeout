@@ -46,7 +46,9 @@ func Args(p Plan) ([]string, error) {
 	}
 	if p.WriteDates && p.When.OK {
 		local := p.When.Local().Format("2006:01:02 15:04:05")
-		utc := p.When.Instant.UTC().Format("2006:01:02 15:04:05")
+		// With QuickTimeUTC=1, ExifTool reads a date without a zone as the
+		// computer's local time, so the UTC value must say +00:00.
+		utc := p.When.Instant.UTC().Format("2006:01:02 15:04:05") + "+00:00"
 		off := ""
 		if p.When.OffsetKnown {
 			off = dates.FormatOffset(p.When.Offset)

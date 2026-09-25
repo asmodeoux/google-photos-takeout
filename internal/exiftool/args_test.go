@@ -52,7 +52,7 @@ func TestVideoCreationDateHasOffset(t *testing.T) {
 	if !strings.Contains(joined, "Keys:CreationDate=2016:12:30 17:55:37+03:00") {
 		t.Fatal(joined)
 	}
-	if !strings.Contains(joined, "QuickTime:CreateDate=2016:12:30 14:55:37") {
+	if !strings.Contains(joined, "QuickTime:CreateDate=2016:12:30 14:55:37+00:00") {
 		t.Fatal(joined)
 	}
 	if !strings.Contains(joined, "Keys:GPSCoordinates=") {
