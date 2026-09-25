@@ -1019,8 +1019,9 @@ func extractGroup(readers map[string]*zipSet, g *group, results string, journal 
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		return err
 	}
-	partial := filepath.Join(staging, g.id+".partial")
-	partial = strings.ReplaceAll(partial, ":", "_")
+	// Group ids contain ":", which Windows refuses in a file name. Only the
+	// name is changed: the folder may start with a drive letter such as "C:".
+	partial := filepath.Join(staging, strings.ReplaceAll(g.id, ":", "_")+".partial")
 	out, err := os.Create(partial)
 	if err != nil {
 		return err
@@ -1554,6 +1555,11 @@ func tagAll(ctx context.Context, force <-chan struct{}, grace time.Duration, run
 		go func(c tagRunner) {
 			defer wg.Done()
 			for i := range jobs {
+				// After Ctrl+C no new write starts, even if this worker and
+				// the cancel became ready at the same moment.
+				if ctx.Err() != nil {
+					continue
+				}
 				g := &groups[i]
 				err := writeTags(c, results, g, i, times)
 				switch {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,9 @@ func TestPathKeyWindows(t *testing.T) {
 }
 
 func TestPathKeyUnixKeepsBackslashAndCase(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix path rules; filepath.Clean on Windows turns / into \\")
+	}
 	if got := pathKey(`/r/a\b.jpg`, false); got != `/r/a\b.jpg` {
 		t.Fatalf("got %q", got)
 	}
@@ -274,7 +278,7 @@ func TestVideoUTCDateIgnoresLocalTimezone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	lines := strings.Split(strings.TrimSpace(r.Out), "\n")
+	lines := strings.Split(strings.TrimSpace(strings.ReplaceAll(r.Out, "\r\n", "\n")), "\n")
 	if len(lines) != 2 || lines[0] != "2019:09:01 01:00:00" || lines[1] != "2019:09:01 10:00:00+09:00" {
 		t.Fatalf("stored %q", lines)
 	}
