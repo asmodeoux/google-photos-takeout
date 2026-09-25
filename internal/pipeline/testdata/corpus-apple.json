@@ -1,5 +1,9 @@
 {
   "files": {
+    "1965/scan-1965.jpg": {
+      "DateTimeOriginal": "1965:06:01 13:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
     "2016/hour-24.jpg": {
       "DateTimeOriginal": "2016:01:26 00:48:29",
       "OffsetTimeOriginal": "+01:00"
@@ -186,6 +190,10 @@
       "DateTimeOriginal": "2019:07:05 11:00:00",
       "OffsetTimeOriginal": "+02:00"
     },
+    "2019/epoch.jpg": {
+      "DateTimeOriginal": "2019:03:02 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
     "2019/exif-close.jpg": {
       "DateTimeOriginal": "2019:06:09 09:00:01"
     },
@@ -334,8 +342,8 @@
     "date_sources": {
       "filename": 5,
       "filename-date": 2,
-      "json-creation": 1,
-      "json-taken": 54,
+      "json-creation": 2,
+      "json-taken": 55,
       "live": 2
     },
     "errors": null,
@@ -358,7 +366,7 @@
       "cr3": 1,
       "gif": 1,
       "heic": 4,
-      "jpeg": 42,
+      "jpeg": 44,
       "mov": 6,
       "mp4": 6,
       "png": 3,
@@ -366,28 +374,29 @@
       "tiff": 1,
       "webp": 1
     },
-    "library": 64,
+    "library": 66,
     "live_pairs": 5,
-    "media": 70,
+    "media": 72,
     "names_rule": "apple",
     "placeholders": 0,
-    "sidecars": 59,
+    "sidecars": 61,
     "symlinks_skipped": 1,
     "system_files_ignored": 5,
     "tag_errors": 0,
     "timezone_steps": {
-      "default": 38,
+      "default": 40,
       "filename": 5,
       "gps": 11,
       "neighbor": 10
     },
-    "unique": 68,
+    "unique": 70,
     "unknown": 3,
     "years": {
+      "1965": 1,
       "2016": 1,
       "2017": 1,
       "2018": 1,
-      "2019": 61
+      "2019": 62
     }
   }
 }

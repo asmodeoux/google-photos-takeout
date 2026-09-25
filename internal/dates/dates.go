@@ -122,12 +122,23 @@ func InBounds(t time.Time, now time.Time) bool {
 	return !u.Before(start) && !u.After(end)
 }
 
+// TakenInBounds accepts a sidecar photoTakenTime from 1800 on. Google stores
+// the date a user set on a scanned photo there, so it can be long before any
+// camera. Unix time 0 means Google had no date.
+func TakenInBounds(t time.Time, now time.Time) bool {
+	if t.IsZero() || t.Unix() == 0 {
+		return false
+	}
+	u := t.UTC()
+	return !u.Before(time.Date(1800, 1, 1, 0, 0, 0, 0, time.UTC)) && !u.After(now.UTC().Add(24*time.Hour))
+}
+
 // FromSidecar applies GPS, an embedded offset, and the camera-clock minus JSON UTC.
 // Neighbor, default, and UTC are filled in later by ResolveChain.
 func FromSidecar(sc Sidecar, emb Embedded, now time.Time) When {
 	var instant time.Time
 	src := ""
-	if sc.Taken != nil && InBounds(*sc.Taken, now) {
+	if sc.Taken != nil && TakenInBounds(*sc.Taken, now) {
 		instant = sc.Taken.UTC()
 		src = SrcTaken
 	} else if sc.Creation != nil && InBounds(*sc.Creation, now) {

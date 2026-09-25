@@ -166,3 +166,19 @@ func TestPinWallClockKeepsWallClock(t *testing.T) {
 		t.Fatalf("UTC fallback %+v", u)
 	}
 }
+
+func TestTakenInBoundsAcceptsOldScans(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	if !TakenInBounds(time.Date(1965, 6, 1, 12, 0, 0, 0, time.UTC), now) {
+		t.Error("1965 rejected")
+	}
+	if TakenInBounds(time.Unix(0, 0), now) {
+		t.Error("Unix time 0 accepted")
+	}
+	if TakenInBounds(time.Date(1799, 12, 31, 0, 0, 0, 0, time.UTC), now) {
+		t.Error("1799 accepted")
+	}
+	if InBounds(time.Date(1965, 6, 1, 12, 0, 0, 0, time.UTC), now) {
+		t.Error("InBounds must still reject 1965 for file names and camera clocks")
+	}
+}

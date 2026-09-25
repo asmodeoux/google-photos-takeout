@@ -758,7 +758,8 @@ func jsonTime(raw map[string]any, key string) *time.Time {
 	default:
 		return nil
 	}
-	if sec <= 0 {
+	// 0 is Google's "no date". Negative is before 1970, such as a dated scan.
+	if sec == 0 {
 		return nil
 	}
 	t := time.Unix(sec, 0).UTC()

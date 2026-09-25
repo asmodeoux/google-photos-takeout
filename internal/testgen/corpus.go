@@ -56,14 +56,14 @@ func Corpus() *Takeout {
 	t.Row("still-jpg-name-png-bytes-gets-png-extension")
 	t.Photo(1, y19, "actually-png.jpg", PNG(next()), &Side{Taken: at(2019, 6, 14, 9, 0, 0)})
 
-	t.Row("still-photoTakenTime-missing-uses-creationTime")
+	t.Row("gpth-395-photoTakenTime-missing-uses-creationTime")
 	t.Photo(1, y19, "created-only.jpg", JPEG(next()), &Side{Created: at(2019, 6, 15, 9, 0, 0)})
 
-	t.Row("still-geoDataExif-missing")
+	t.Row("gpth-377-geoDataExif-missing")
 	lat, lon = geo(moscow)
 	t.Photo(1, y19, "no-geo-exif.jpg", JPEG(next()), &Side{Taken: at(2019, 6, 16, 9, 0, 0), Lat: lat, Lon: lon, NoGeoExif: true})
 
-	t.Row("still-camera-hour-24-does-not-crash")
+	t.Row("gpth-14-camera-hour-24-does-not-crash")
 	t.Photo(1, y19, "hour-24.jpg", JPEGWithDate(next(), "2016:01:26 24:48:30"), &Side{Taken: at(2016, 1, 25, 23, 48, 29)})
 
 	// No sidecar: the date comes from the name, or the file goes to unknown/.
@@ -75,6 +75,10 @@ func Corpus() *Takeout {
 	t.Put(1, y19, "IMG-20190203-WA0026.jpg", JPEG(next()))
 	t.Row("gpth-436-date-prefix-and-uuid")
 	t.Put(1, y19, "2019-04-21_640fea6c-bb0a-cf02-951c-00d09ac2d3cc.jpg", JPEG(next()))
+	t.Row("gpth-32-scan-dated-1965-keeps-its-date")
+	t.Photo(1, "Photos from 1965", "scan-1965.jpg", JPEG(next()), &Side{Taken: at(1965, 6, 1, 12, 0, 0), Created: at(2019, 3, 1, 9, 0, 0)})
+	t.Row("gpth-436-epoch-zero-taken-uses-creationTime")
+	t.Photo(1, y19, "epoch.jpg", JPEG(next()), &Side{Taken: time.Unix(0, 0).UTC(), Created: at(2019, 3, 2, 9, 0, 0)})
 	t.Row("no-sidecar-no-date-goes-to-unknown")
 	t.Put(1, y19, "no-date-at-all.jpg", JPEG(next()))
 
@@ -83,12 +87,12 @@ func Corpus() *Takeout {
 	t.Put(1, y19, "short.jpg", JPEG(next()))
 	t.SideAs(1, y19, "short.jpg.json", "short.jpg", Side{Taken: at(2019, 7, 1, 9, 0, 0)})
 
-	t.Row("sidecar-truncated-to-51-bytes")
+	t.Row("gpth-353-sidecar-truncated-to-51-bytes")
 	long := "a_very_long_file_name_for_truncation_tests_x.jpg" // 48 bytes
 	t.Put(1, y19, long, JPEG(next()))
 	t.SideAs(1, y19, fit51(long+".supplemental-metadata"), long, Side{Taken: at(2019, 7, 2, 9, 0, 0)})
 
-	t.Row("sidecar-suppl-truncation-uuid-name")
+	t.Row("gpth-448-sidecar-suppl-truncation-uuid-name")
 	uuid := "0bca7b90-299e-4000-b29a-d97037b18456.jpg"
 	t.Put(1, y19, uuid, JPEG(next()))
 	t.SideAs(1, y19, fit51(uuid+".supplemental-metadata"), uuid, Side{Taken: at(2019, 7, 3, 9, 0, 0)})
@@ -186,7 +190,7 @@ func Corpus() *Takeout {
 	t.Photo(1, y19, "anim.gif", GIF(next()), &Side{Taken: at(2019, 10, 1, 9, 0, 0)})
 
 	// Localized year folders and system folders.
-	t.Row("year-folder-german")
+	t.Row("gpth-461-year-folder-german")
 	t.Photo(1, "Fotos von 2018", "de.jpg", JPEG(next()), &Side{Taken: at(2018, 5, 1, 9, 0, 0)})
 	t.Row("year-folder-russian")
 	t.Photo(1, "Фото за 2017", "ru.jpg", JPEG(next()), &Side{Taken: at(2017, 5, 1, 9, 0, 0)})
@@ -199,7 +203,7 @@ func Corpus() *Takeout {
 	t.Row("album-duplicate-of-library-photo")
 	t.Photo(2, `Trip: "A|B"?`, "gps-moscow.jpg", gpsBytes, &Side{Taken: at(2019, 6, 6, 11, 23, 31)})
 	t.Photo(2, "Café & Friends 🎉", "caption.jpg", captionBytes, &Side{Taken: at(2019, 6, 8, 9, 0, 0)})
-	t.Row("album-only-file-joins-library")
+	t.Row("gpth-366-album-only-file-joins-library")
 	t.Photo(2, `Trip: "A|B"?`, "album-only.jpg", JPEG(next()), &Side{Taken: at(2019, 12, 1, 9, 0, 0)})
 	t.Row("album-names-differing-only-in-case")
 	t.Photo(2, "Trip", "t1.jpg", JPEG(next()), &Side{Taken: at(2019, 12, 2, 9, 0, 0)})
