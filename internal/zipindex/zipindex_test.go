@@ -117,3 +117,37 @@ func TestBadZip(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestMissingPartsPerExport(t *testing.T) {
+	dir := t.TempDir()
+	var paths []string
+	for _, name := range []string{
+		"takeout-20240101T000000Z-1-001.zip", "takeout-20240101T000000Z-1-002.zip",
+		"takeout-20250101T000000Z-1-001.zip", "takeout-20250101T000000Z-1-003.zip",
+	} {
+		p := filepath.Join(dir, name)
+		f, err := os.Create(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		zw := zip.NewWriter(f)
+		w, _ := zw.Create("Takeout/Google Photos/Photos from 2019/" + name + ".jpg")
+		w.Write([]byte("x"))
+		zw.Close()
+		f.Close()
+		paths = append(paths, p)
+	}
+	idx, err := Open(paths)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idx.ExportIDs) != 2 {
+		t.Fatalf("exports %v", idx.ExportIDs)
+	}
+	if got := idx.MissingByExport["20250101T000000Z"]; len(got) != 1 || got[0] != 2 {
+		t.Fatalf("missing %v", idx.MissingByExport)
+	}
+	if _, ok := idx.MissingByExport["20240101T000000Z"]; ok {
+		t.Fatal("complete export reported missing")
+	}
+}

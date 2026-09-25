@@ -8,6 +8,7 @@ import (
 	"io"
 	"path"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"unicode"
@@ -38,11 +39,13 @@ type Entry struct {
 
 // Index is the merged view of every zip.
 type Index struct {
-	Entries    []Entry
-	Zips       []ZipInfo
-	ExportIDs  []string
-	Missing    []int
-	PartPrefix string
+	Entries   []Entry
+	Zips      []ZipInfo
+	ExportIDs []string
+	Missing   []int
+	// MissingByExport lists missing part numbers for each export ID.
+	MissingByExport map[string][]int
+	PartPrefix      string
 }
 
 // ZipInfo describes one archive part.
@@ -119,12 +122,14 @@ func Open(paths []string) (*Index, error) {
 		zr.Close()
 		idx.Zips = append(idx.Zips, info)
 	}
-	seen := map[string]bool{}
-	for id, set := range parts {
-		if !seen[id] {
-			seen[id] = true
-			idx.ExportIDs = append(idx.ExportIDs, id)
-		}
+	ids := make([]string, 0, len(parts))
+	for id := range parts {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		set := parts[id]
+		idx.ExportIDs = append(idx.ExportIDs, id)
 		max := 0
 		for n := range set {
 			if n > max {
@@ -134,6 +139,10 @@ func Open(paths []string) (*Index, error) {
 		for n := 1; n <= max; n++ {
 			if !set[n] {
 				idx.Missing = append(idx.Missing, n)
+				if idx.MissingByExport == nil {
+					idx.MissingByExport = map[string][]int{}
+				}
+				idx.MissingByExport[id] = append(idx.MissingByExport[id], n)
 			}
 		}
 	}

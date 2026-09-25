@@ -89,6 +89,7 @@ type Report struct {
 	PlaceholderURL []string       `json:"placeholder_urls,omitempty"`
 	Errors         []string       `json:"errors,omitempty"`
 	Filesystem     string         `json:"filesystem"`
+	ExportIDs      []string       `json:"export_ids,omitempty"`
 	NamesRule      string         `json:"names_rule,omitempty"`
 	NamesReason    string         `json:"names_reason,omitempty"`
 	AlbumRenames   []string       `json:"album_renames,omitempty"`
@@ -160,8 +161,15 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if len(idx.ExportIDs) > 1 {
 		rep.Errors = append(rep.Errors, "mixed export ids: "+strings.Join(idx.ExportIDs, ", "))
 	}
-	if len(idx.Missing) > 0 {
-		return ExitPreflight, rep, fmt.Errorf("takeout is missing zip part(s) %v. Re-download those parts before running", idx.Missing)
+	rep.ExportIDs = idx.ExportIDs
+	if len(idx.MissingByExport) > 0 {
+		var parts []string
+		for _, id := range idx.ExportIDs {
+			if miss := idx.MissingByExport[id]; len(miss) > 0 {
+				parts = append(parts, fmt.Sprintf("export %s is missing part(s) %v", id, miss))
+			}
+		}
+		return ExitPreflight, rep, fmt.Errorf("%s. Re-download those parts before running", strings.Join(parts, "; "))
 	}
 	if _, err := exiftool.Look(opt.Exiftool); err != nil && !opt.UnzipOnly {
 		return ExitPreflight, rep, err
@@ -242,6 +250,11 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 
 	groups := groupBy(items)
+	pr.Phase("confirm duplicates")
+	groups, err = confirmDuplicates(ctx, readers, groups)
+	if err != nil {
+		return ExitInterrupt, rep, err
+	}
 	rep.Unique = len(groups)
 	noteNear(&rep, groups)
 	for i := range groups {
@@ -284,6 +297,11 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		fmt.Fprintf(opt.Stdout, "note: %s is not APFS, so album folders are full copies\n", fs.Type)
 	}
 
+	release, err := state.Lock(filepath.Join(opt.Results, ".takeout"))
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	defer release()
 	journal, err := state.OpenJournal(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
 	if err != nil {
 		return ExitPreflight, rep, err
@@ -465,6 +483,70 @@ func groupBy(media []member) []group {
 		out = append(out, *m[id])
 	}
 	return out
+}
+
+// confirmDuplicates splits groups whose members share size and CRC32 but not
+// bytes. CRC32 is only a quick filter: two different photos can share it, and
+// merging them would lose one. The first subgroup keeps the group id, so a
+// journal from an earlier run still matches. An unreadable member gets its own
+// group, and extraction reports the error.
+func confirmDuplicates(ctx context.Context, readers map[string]*zipSet, groups []group) ([]group, error) {
+	out := make([]group, 0, len(groups))
+	for _, g := range groups {
+		if len(g.members) < 2 {
+			out = append(out, g)
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		by := map[string]*group{}
+		var order []string
+		for _, m := range g.members {
+			key, err := hashMember(readers, m.Entry)
+			if err != nil {
+				key = "unreadable:" + m.EntryName
+			}
+			sg, ok := by[key]
+			if !ok {
+				sg = &group{id: g.id, live: -1}
+				if len(order) > 0 {
+					sg.id = g.id + ":" + shortKey(key)
+				}
+				by[key] = sg
+				order = append(order, key)
+			}
+			sg.members = append(sg.members, m)
+		}
+		for _, key := range order {
+			out = append(out, *by[key])
+		}
+	}
+	return out, nil
+}
+
+func shortKey(k string) string {
+	if len(k) > 12 {
+		return k[:12]
+	}
+	return k
+}
+
+func hashMember(readers map[string]*zipSet, e zipindex.Entry) (string, error) {
+	f, err := zipFile(readers, e)
+	if err != nil {
+		return "", err
+	}
+	rc, err := f.Open()
+	if err != nil {
+		return "", err
+	}
+	defer rc.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, rc); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 func pickCanon(g *group, rep *Report) {
