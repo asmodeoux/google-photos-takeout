@@ -272,3 +272,29 @@ func TestVideoUTCDateIgnoresLocalTimezone(t *testing.T) {
 		t.Fatalf("stored %q", lines)
 	}
 }
+
+// A relative path, such as the default --results results, must find the row
+// ExifTool reports under the absolute path ReadJSON sent.
+func TestReadAllFindsRelativePaths(t *testing.T) {
+	requireExiftool(t)
+	t.Chdir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join("results", "2019"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rel := filepath.Join("results", "2019", "a.jpg")
+	if err := os.WriteFile(rel, tinyJPEG, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	rows, errs := ReadAll([]*Client{c}, []string{rel}, []string{"FileType"}, false)
+	if len(errs) > 0 {
+		t.Fatal(errs)
+	}
+	if row, ok := rows[PathKey(rel)]; !ok || row["FileType"] != "JPEG" {
+		t.Fatalf("no row for %s in %v", rel, rows)
+	}
+}

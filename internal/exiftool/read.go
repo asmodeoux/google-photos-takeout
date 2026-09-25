@@ -98,9 +98,13 @@ func ReadAll(clients []*Client, paths, tags []string, numeric bool) (map[string]
 }
 
 // PathKey is the one form used to match a path Go built against the SourceFile
-// ExifTool reports. ExifTool turns backslashes into forward slashes on Windows,
+// ExifTool reports. ReadJSON sends absolute paths, so a relative path is made
+// absolute first. ExifTool turns backslashes into forward slashes on Windows,
 // and NTFS and APFS compare names without regard to case or normalization.
 func PathKey(p string) string {
+	if abs, err := filepath.Abs(p); err == nil {
+		p = abs
+	}
 	return pathKey(p, runtime.GOOS == "windows")
 }
 
