@@ -80,6 +80,7 @@ type Report struct {
 	IDCopied       int            `json:"identifier_copied"`
 	TagErrors      int            `json:"tag_errors"`
 	Motions        int            `json:"motion_photos"`
+	CR3Untagged    int            `json:"cr3_untagged"` // placed without tag writes
 	Screenshots    int            `json:"screenshots_excluded"`
 	Unique         int            `json:"unique"`
 	WithGPS        int            `json:"with_gps"`
@@ -809,7 +810,7 @@ func extractGroup(readers map[string]*zipSet, g *group, results string, journal 
 				buf := make([]byte, 32)
 				n, _ := hf.Read(buf)
 				hf.Close()
-				g.trueType = zipindex.Sniff(buf[:n])
+				g.trueType = kindOf(buf[:n], g.members[g.canon].Name)
 			}
 			if g.trueType == "" || g.trueType == "unknown" {
 				g.trueType = kindFromExt(g.members[g.canon].Name)
@@ -870,7 +871,7 @@ func extractGroup(readers map[string]*zipSet, g *group, results string, journal 
 		return err
 	}
 	// CRC is checked by zip.Reader when the file is fully read. A short read would have errored.
-	g.trueType = zipindex.Sniff(head)
+	g.trueType = kindOf(head, m.Name)
 	g.sha = hex.EncodeToString(h.Sum(nil))
 	final := filepath.Join(staging, g.sha)
 	// The staged name is the content hash, so an existing file there is the same bytes.
@@ -896,8 +897,24 @@ func bytesContains(b, sub []byte) bool {
 	return len(sub) == 0 || (len(b) >= len(sub) && func() bool { return strings.Contains(string(b), string(sub)) }())
 }
 
+// kindOf sniffs a file's type from its first bytes. A TIFF whose name has a
+// camera RAW extension is raw.
+func kindOf(head []byte, name string) string {
+	k := zipindex.Sniff(head)
+	if k == "tiff" && kindFromExt(name) == "raw" {
+		return "raw"
+	}
+	return k
+}
+
 func kindFromExt(p string) string {
 	switch strings.ToLower(filepath.Ext(p)) {
+	case ".dng", ".cr2", ".nef", ".nrw", ".arw", ".srw", ".pef", ".orf", ".rw2", ".raf":
+		return "raw"
+	case ".cr3":
+		return "cr3"
+	case ".tif", ".tiff":
+		return "tiff"
 	case ".jpg", ".jpeg":
 		return "jpeg"
 	case ".png":
@@ -1118,6 +1135,26 @@ func pairLive(groups []group, rep *Report) {
 		}
 		link(best, vids[0])
 	}
+	// A camera's RAW+JPEG pair keeps one name, so Apple Photos imports it as
+	// one photo with a RAW original.
+	for _, idxs := range byStem {
+		var raws, stills []int
+		for _, i := range idxs {
+			switch groups[i].trueType {
+			case "raw", "cr3":
+				raws = append(raws, i)
+			case "jpeg", "heic":
+				if groups[i].live < 0 {
+					stills = append(stills, i)
+				}
+			}
+		}
+		if len(raws) == 1 && len(stills) == 1 {
+			a, b := raws[0], stills[0]
+			pk := "raw:" + min(groups[a].id, groups[b].id)
+			groups[a].pairKey, groups[b].pairKey = pk, pk
+		}
+	}
 	for i := range groups {
 		g := &groups[i]
 		if g.live < 0 {
@@ -1297,7 +1334,7 @@ func tagAll(ctx context.Context, force <-chan struct{}, grace time.Duration, run
 feed:
 	for i := range groups {
 		g := &groups[i]
-		if g.skip || g.placeholder || g.staged == "" || g.trueType == "webm" {
+		if g.skip || g.placeholder || g.staged == "" || g.trueType == "webm" || g.trueType == "cr3" {
 			continue
 		}
 		if rec, ok := journal.Get(g.id); ok && rec.Stage == "tagged" {
@@ -1771,6 +1808,9 @@ func fillReport(rep *Report, groups []group) {
 			rep.Formats = map[string]int{}
 		}
 		rep.Formats[kind]++
+		if kind == "cr3" {
+			rep.CR3Untagged++
+		}
 		if g.when.HasGPS {
 			rep.WithGPS++
 		}
@@ -1804,7 +1844,7 @@ func verifyTags(clients []*exiftool.Client, results string, groups []group, rep 
 	var items []item
 	for i := range groups {
 		g := &groups[i]
-		if g.outRel == "" || !g.when.OK || g.placeholder || g.trueType == "gif" || g.trueType == "webm" {
+		if g.outRel == "" || !g.when.OK || g.placeholder || g.trueType == "gif" || g.trueType == "webm" || g.trueType == "cr3" {
 			continue
 		}
 		if g.when.Source == dates.SrcEmbedded {

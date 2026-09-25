@@ -60,6 +60,19 @@ func TestSniff(t *testing.T) {
 	if Sniff(mov) != "mov" {
 		t.Fatal("mov")
 	}
+	for head, want := range map[string]string{
+		"II*\x00\x08\x00\x00\x00":          "tiff",
+		"MM\x00*\x00\x00\x00\x08":          "tiff",
+		"IIRO\x08\x00\x00\x00":             "raw",
+		"IIU\x00\x08\x00\x00\x00":          "raw",
+		"FUJIFILMCCD-RAW 0201":             "raw",
+		"\x00\x00\x00\x18ftypcrx \x00\x00": "cr3",
+		"\x00\x00\x00\x18ftypisom\x00\x00": "mp4",
+	} {
+		if got := Sniff([]byte(head)); got != want {
+			t.Errorf("Sniff(%q) = %s, want %s", head, got, want)
+		}
+	}
 }
 
 func TestZipSlipAndOpen(t *testing.T) {

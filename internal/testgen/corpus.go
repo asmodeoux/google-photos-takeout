@@ -153,6 +153,18 @@ func Corpus() *Takeout {
 	t.Photo(1, y19, "PXL_0002.jpg", JPEG(next()), &Side{Taken: at(2019, 9, 2, 9, 0, 0)})
 	t.Photo(2, y19, "PXL_0002.mp4", Unique(Fixture("clip2.mp4"), "live-b"), &Side{Taken: at(2019, 9, 2, 9, 0, 0)})
 
+	// Camera RAW.
+	t.Row("gpth-462-dng-raw-tagged")
+	lat, lon = geo(la)
+	t.Photo(1, y19, "RAW_0001.dng", TIFFRAW(next()), &Side{Taken: at(2019, 9, 20, 9, 0, 0), Lat: lat, Lon: lon})
+	t.Row("gpth-271-nef-raw-tagged")
+	t.Photo(1, y19, "DSC_0002.NEF", TIFFRAW(next()), &Side{Taken: at(2019, 9, 21, 9, 0, 0)})
+	t.Row("raw-cr3-and-jpeg-same-name-are-not-a-live-photo")
+	t.Photo(1, y19, "IMG_0003.CR3", CR3(next()), &Side{Taken: at(2019, 9, 22, 9, 0, 0)})
+	t.Photo(1, y19, "IMG_0003.JPG", JPEG(next()), &Side{Taken: at(2019, 9, 22, 9, 0, 0)})
+	t.Row("tiff-scan-tagged")
+	t.Photo(1, y19, "scan.tif", TIFFRAW(next()), &Side{Taken: at(2019, 9, 23, 9, 0, 0)})
+
 	t.Row("gif-gets-xmp-date-only")
 	t.Photo(1, y19, "anim.gif", GIF(next()), &Side{Taken: at(2019, 10, 1, 9, 0, 0)})
 

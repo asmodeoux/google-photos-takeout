@@ -135,7 +135,7 @@ func runCorpus(t *testing.T, rule string) corpusResult {
 	report := map[string]any{}
 	for _, k := range []string{"media", "sidecars", "unique", "library", "unknown", "placeholders", "live_pairs",
 		"tag_errors", "formats", "years", "date_sources", "timezone_steps", "names_rule", "album_renames", "extension_fixes",
-		"system_files_ignored", "symlinks_skipped"} {
+		"system_files_ignored", "symlinks_skipped", "cr3_untagged"} {
 		if v, ok := all[k]; ok {
 			report[k] = v
 		}

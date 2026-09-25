@@ -346,7 +346,10 @@ func IsSkippedJSON(name string) bool {
 	return false
 }
 
-// Sniff returns jpeg, png, gif, webp, heic, mov, mp4, webm, or unknown.
+// Sniff returns jpeg, png, gif, webp, heic, mov, mp4, webm, tiff, raw, cr3, or
+// unknown. tiff covers TIFF-based camera RAW such as DNG, CR2, NEF and ARW; raw
+// is a RAW format with its own header (ORF, RW2, RAF); cr3 is Canon's ISO-BMFF
+// RAW, which must not be mistaken for a video.
 func Sniff(b []byte) string {
 	if len(b) >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff {
 		return "jpeg"
@@ -363,9 +366,23 @@ func Sniff(b []byte) string {
 	if len(b) >= 4 && b[0] == 0x1a && b[1] == 0x45 && b[2] == 0xdf && b[3] == 0xa3 {
 		return "webm"
 	}
+	if len(b) >= 4 && (bytes.Equal(b[:4], []byte("II*\x00")) || bytes.Equal(b[:4], []byte("MM\x00*"))) {
+		return "tiff"
+	}
+	if len(b) >= 4 {
+		switch string(b[:4]) {
+		case "IIRO", "IIRS", "MMOR", "IIU\x00":
+			return "raw"
+		}
+	}
+	if len(b) >= 15 && string(b[:15]) == "FUJIFILMCCD-RAW" {
+		return "raw"
+	}
 	if len(b) >= 12 && bytes.Equal(b[4:8], []byte("ftyp")) {
 		brand := string(b[8:12])
 		switch brand {
+		case "crx ":
+			return "cr3"
 		case "heic", "heix", "hevc", "hevx", "mif1", "msf1", "heim", "heis":
 			return "heic"
 		case "qt  ":

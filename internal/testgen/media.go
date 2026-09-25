@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"embed"
 	"encoding/binary"
+	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
@@ -151,4 +152,15 @@ func TIFFRAW(seed int) []byte {
 	binary.Write(&t, le, uint32(0))
 	t.WriteByte(byte(seed))
 	return t.Bytes()
+}
+
+// CR3 returns the start of a Canon CR3: an ISO-BMFF ftyp box with brand
+// "crx ", the shape that looks like an MP4 to a naive sniffer.
+func CR3(seed int) []byte {
+	var b bytes.Buffer
+	binary.Write(&b, binary.BigEndian, uint32(24))
+	b.WriteString("ftypcrx ")
+	binary.Write(&b, binary.BigEndian, uint32(1))
+	b.WriteString("crx isom")
+	return Unique(b.Bytes(), fmt.Sprintf("cr3-%d", seed))
 }

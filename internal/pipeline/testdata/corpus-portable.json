@@ -23,6 +23,10 @@
       "DateTimeOriginal": "2019:07:10 11:00:00",
       "OffsetTimeOriginal": "+02:00"
     },
+    "2019/DSC_0002.NEF": {
+      "DateTimeOriginal": "2019:09:21 02:00:00",
+      "OffsetTimeOriginal": "-07:00"
+    },
     "2019/IMG-20190203-WA0026.jpg": {
       "DateTimeOriginal": "2019:02:03 12:00:00"
     },
@@ -39,6 +43,11 @@
       "GPSLatitude": "35.6762",
       "GPSLongitude": "139.6503",
       "OffsetTimeOriginal": "+09:00"
+    },
+    "2019/IMG_0003.CR3": {},
+    "2019/IMG_0003.jpg": {
+      "DateTimeOriginal": "2019:09:22 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
     },
     "2019/IMG_0100.heic": {
       "DateTimeOriginal": "2019:06:13 10:00:00",
@@ -61,6 +70,12 @@
     "2019/PXL_0002.jpg": {
       "DateTimeOriginal": "2019:09:02 18:00:00",
       "OffsetTimeOriginal": "+09:00"
+    },
+    "2019/RAW_0001.dng": {
+      "DateTimeOriginal": "2019:09:20 02:00:00",
+      "GPSLatitude": "34.0522",
+      "GPSLongitude": "-118.2437",
+      "OffsetTimeOriginal": "-07:00"
     },
     "2019/Screenshot_20190607-101010.png": {
       "DateCreated": "2019:06:07 10:10:10",
@@ -161,6 +176,10 @@
     "2019/real.png": {
       "DateCreated": "2019:06:11 11:00:00+02:00",
       "DateTimeOriginal": "2019:06:11 11:00:00",
+      "OffsetTimeOriginal": "+02:00"
+    },
+    "2019/scan.tif": {
+      "DateTimeOriginal": "2019:09:23 11:00:00",
       "OffsetTimeOriginal": "+02:00"
     },
     "2019/short.jpg": {
@@ -264,15 +283,17 @@
       "trailing dot. -\u003e trailing dot",
       "trip -\u003e trip (2)"
     ],
+    "cr3_untagged": 1,
     "date_sources": {
       "filename": 2,
       "filename-date": 2,
       "json-creation": 1,
-      "json-taken": 45
+      "json-taken": 50
     },
     "errors": null,
     "extension_fixes": [
       "IMG_0001.HEIC -\u003e IMG_0001.heic",
+      "IMG_0003.JPG -\u003e IMG_0003.jpg",
       "IMG_0100.HEIC -\u003e IMG_0100.heic",
       "IMG_CASE.JPG -\u003e IMG_CASE.jpg",
       "actually-png.jpg -\u003e actually-png.png",
@@ -281,36 +302,39 @@
       "PXL_0002.mp4 -\u003e PXL_0002.MOV"
     ],
     "formats": {
+      "cr3": 1,
       "gif": 1,
       "heic": 2,
-      "jpeg": 39,
+      "jpeg": 40,
       "mov": 4,
       "mp4": 3,
       "png": 3,
+      "raw": 2,
+      "tiff": 1,
       "webp": 1
     },
-    "library": 50,
+    "library": 55,
     "live_pairs": 2,
-    "media": 56,
+    "media": 61,
     "names_rule": "portable",
     "placeholders": 0,
-    "sidecars": 51,
+    "sidecars": 56,
     "symlinks_skipped": 1,
     "system_files_ignored": 5,
     "tag_errors": 0,
     "timezone_steps": {
-      "default": 33,
+      "default": 36,
       "filename": 4,
-      "gps": 6,
-      "neighbor": 7
+      "gps": 7,
+      "neighbor": 8
     },
-    "unique": 54,
+    "unique": 59,
     "unknown": 3,
     "years": {
       "2016": 1,
       "2017": 1,
       "2018": 1,
-      "2019": 47
+      "2019": 52
     }
   }
 }

@@ -13,6 +13,7 @@ import (
 
 // YearMismatches lists files under a four-digit year folder whose embedded
 // capture date is a different year. A file in results/2018 must say 2018.
+// Canon CR3 files are skipped: takeout does not write tags into them.
 func YearMismatches(clients []*exiftool.Client, root string) ([]string, error) {
 	var files []string
 	years := map[string]string{}
@@ -25,7 +26,7 @@ func YearMismatches(clients []*exiftool.Client, root string) ([]string, error) {
 			continue
 		}
 		err := filepath.WalkDir(filepath.Join(root, e.Name()), func(p string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() || zipindex.IsSystemName(d.Name()) {
+			if err != nil || d.IsDir() || zipindex.IsSystemName(d.Name()) || kindFromExt(d.Name()) == "cr3" {
 				return nil
 			}
 			abs, err := filepath.Abs(p)
