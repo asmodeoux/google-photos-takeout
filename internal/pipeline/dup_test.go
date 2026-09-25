@@ -1,8 +1,10 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/asmodeoux/google-photos-takeout/internal/zipindex"
@@ -52,5 +54,50 @@ func TestConfirmDuplicatesSplitsCRCCollisions(t *testing.T) {
 	sizes := map[int]bool{len(got[0].members): true, len(got[1].members): true}
 	if !sizes[2] || !sizes[1] {
 		t.Fatalf("members %d %d", len(got[0].members), len(got[1].members))
+	}
+
+	// The journal is keyed by id, so the same content must get the same id
+	// when the zips list the files in another order.
+	idOf := func(gs []group) map[string]string {
+		m := map[string]string{}
+		for _, g := range gs {
+			for _, mem := range g.members {
+				m[mem.EntryName] = g.id
+			}
+		}
+		return m
+	}
+	reversed := groupBy(items)
+	ms := reversed[0].members
+	for i, j := 0, len(ms)-1; i < j; i, j = i+1, j-1 {
+		ms[i], ms[j] = ms[j], ms[i]
+	}
+	got2, err := confirmDuplicates(context.Background(), readers, reversed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, b := idOf(got), idOf(got2)
+	for name, id := range a {
+		if b[name] != id {
+			t.Errorf("%s: id %q in one order, %q in the other", name, id, b[name])
+		}
+	}
+}
+
+func TestHugeSidecarIsRefusedNotRead(t *testing.T) {
+	z := filepath.Join(t.TempDir(), "takeout-20200101T000000Z-1-001.zip")
+	huge := append([]byte(`{"title":"`), bytes.Repeat([]byte("a"), maxSidecar+10)...)
+	writeZip(t, z, map[string][]byte{"Takeout/Google Photos/Photos from 2019/a.jpg.json": append(huge, `"}`...)})
+	idx, err := zipindex.Open([]string{z})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readers, err := openZips([]string{z})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeZips(readers)
+	if _, err := readSidecar(readers, idx.Entries[0]); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("got %v", err)
 	}
 }

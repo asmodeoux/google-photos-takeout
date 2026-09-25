@@ -11,3 +11,18 @@ func TestParseCreationInstant(t *testing.T) {
 		t.Fatal("accepted junk")
 	}
 }
+
+// Google writes altitude 0 when it does not know it; that is not sea level.
+func TestSidecarAltitudeZeroIsUnknown(t *testing.T) {
+	sc, err := parseSidecar("a.jpg.json", []byte(`{"geoData":{"latitude":48.1,"longitude":11.5,"altitude":0.0}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sc.HasGeo || sc.HasAlt {
+		t.Fatalf("geo %v alt %v", sc.HasGeo, sc.HasAlt)
+	}
+	sc, _ = parseSidecar("a.jpg.json", []byte(`{"geoData":{"latitude":48.1,"longitude":11.5,"altitude":519.2}}`))
+	if !sc.HasAlt || sc.Alt != 519.2 {
+		t.Fatalf("alt %v %v", sc.HasAlt, sc.Alt)
+	}
+}

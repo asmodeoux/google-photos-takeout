@@ -645,8 +645,9 @@ func groupBy(media []member) []group {
 
 // confirmDuplicates splits groups whose members share size and CRC32 but not
 // bytes. CRC32 is only a quick filter: two different photos can share it, and
-// merging them would lose one. The first subgroup keeps the group id, so a
-// journal from an earlier run still matches. An unreadable member gets its own
+// merging them would lose one. Subgroup ids come from content, not zip order,
+// so they are the same on every run: the subgroup with the smallest hash keeps
+// the group id, the others add a short hash. An unreadable member gets its own
 // group, and extraction reports the error.
 func confirmDuplicates(ctx context.Context, readers map[string]*zipSet, groups []group) ([]group, error) {
 	out := make([]group, 0, len(groups))
@@ -663,21 +664,25 @@ func confirmDuplicates(ctx context.Context, readers map[string]*zipSet, groups [
 		for _, m := range g.members {
 			key, err := hashMember(readers, m.Entry)
 			if err != nil {
-				key = "unreadable:" + m.EntryName
+				sum := sha256.Sum256([]byte("unreadable:" + m.ZipPath + "\x00" + m.EntryName))
+				key = "~" + hex.EncodeToString(sum[:])
 			}
 			sg, ok := by[key]
 			if !ok {
-				sg = &group{id: g.id, live: -1}
-				if len(order) > 0 {
-					sg.id = g.id + ":" + shortKey(key)
-				}
+				sg = &group{live: -1}
 				by[key] = sg
 				order = append(order, key)
 			}
 			sg.members = append(sg.members, m)
 		}
-		for _, key := range order {
-			out = append(out, *by[key])
+		sort.Strings(order)
+		for i, key := range order {
+			sg := by[key]
+			sg.id = g.id
+			if i > 0 {
+				sg.id = g.id + ":" + shortKey(strings.TrimPrefix(key, "~"))
+			}
+			out = append(out, *sg)
 		}
 	}
 	return out, nil
@@ -842,15 +847,26 @@ func readSidecar(readers map[string]*zipSet, e zipindex.Entry) (*scInfo, error) 
 		return nil, err
 	}
 	defer rc.Close()
-	b, err := io.ReadAll(rc)
+	b, err := io.ReadAll(io.LimitReader(rc, maxSidecar+1))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w. Re-download the zip if the CRC check failed", e.Name, err)
 	}
+	if len(b) > maxSidecar {
+		return nil, fmt.Errorf("%s: sidecar is larger than %d MB, not a Google Photos sidecar", e.Name, maxSidecar>>20)
+	}
+	return parseSidecar(e.Name, b)
+}
+
+// maxSidecar bounds how much of one JSON sidecar is read. Real ones are about
+// a kilobyte; a damaged zip must not make takeout read gigabytes into memory.
+const maxSidecar = 16 << 20
+
+func parseSidecar(name string, b []byte) (*scInfo, error) {
 	var raw map[string]any
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return nil, err
 	}
-	sc := &scInfo{Name: e.Name}
+	sc := &scInfo{Name: name}
 	if t, ok := raw["title"].(string); ok {
 		sc.Title = t
 	}
@@ -863,9 +879,9 @@ func readSidecar(readers map[string]*zipSet, e zipindex.Entry) (*scInfo, error) 
 	sc.Taken = jsonTime(raw, "photoTakenTime")
 	sc.Creation = jsonTime(raw, "creationTime")
 	if lat, lon, alt, ok := jsonGeo(raw, "geoData"); ok {
-		sc.Lat, sc.Lon, sc.Alt, sc.HasGeo, sc.HasAlt = lat, lon, alt, true, true
+		sc.Lat, sc.Lon, sc.Alt, sc.HasGeo, sc.HasAlt = lat, lon, alt, true, alt != 0
 	} else if lat, lon, alt, ok := jsonGeo(raw, "geoDataExif"); ok {
-		sc.Lat, sc.Lon, sc.Alt, sc.HasGeo, sc.HasAlt = lat, lon, alt, true, true
+		sc.Lat, sc.Lon, sc.Alt, sc.HasGeo, sc.HasAlt = lat, lon, alt, true, alt != 0
 	}
 	sc.Sidecar = dates.Sidecar{
 		Title: sc.Title, Description: sc.Description,
