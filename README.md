@@ -346,7 +346,7 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 
 ## FAQ
 
-**Does it upload anything?** No. It reads your zips and writes files on your disk.
+**Does it upload anything?** takeout itself never sends anything over the network: it reads your zips and writes files on your disk. The one exception you can ask for is Apple Photos. `import-photos` (macOS) is meant to import the library into a Photos library you name. If that is your iCloud-synced system library, Photos then uploads what was imported to iCloud, so the command refuses it unless you add `--confirm-icloud`. A separate library you create with Option-click in Photos is never uploaded. Today `import-photos` only checks the library and prints the AppleScript it will run; it does not import yet.
 
 **Can I run it again?** Yes. It resumes from the journal in `results/.takeout/` and never overwrites a finished file.
 
