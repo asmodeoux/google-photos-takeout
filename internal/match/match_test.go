@@ -69,3 +69,13 @@ func TestSameNameDifferentFolder(t *testing.T) {
 		t.Fatal("folders must stay apart")
 	}
 }
+
+func TestCandidatesMetadataVariant(t *testing.T) {
+	c := Candidates("LIVE.MP4")
+	if !has(c, "LIVE.MP4.metadata.json") {
+		t.Fatalf("metadata.json missing: %v", c)
+	}
+	if FoldKey("A", "IMG.JPG.json") != FoldKey("A", "img.jpg.JSON") || FoldKey("A", "x") == FoldKey("B", "x") {
+		t.Fatal("fold key")
+	}
+}

@@ -214,6 +214,9 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	defer closeZips(readers)
 
 	sidecars := map[string]*scInfo{}
+	// sidecarsFolded finds a sidecar whose name differs only in case. It is
+	// used only when exactly one sidecar has that name.
+	sidecarsFolded := map[string][]*scInfo{}
 	var items []member
 	var skippedJSON []zipindex.Entry
 	pr.Phase("read sidecars")
@@ -230,6 +233,8 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 				continue
 			}
 			sidecars[match.Key(e.RelFolder, e.Name)] = sc
+			fold := match.FoldKey(e.RelFolder, e.Name)
+			sidecarsFolded[fold] = append(sidecarsFolded[fold], sc)
 			skippedJSON = append(skippedJSON, e)
 			rep.Sidecars++
 			continue
@@ -256,13 +261,22 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		if zipindex.Classify(m.RelFolder) == zipindex.ClassTrash && !opt.IncludeTrash {
 			continue
 		}
-		for _, c := range match.Candidates(m.Name) {
+		cands := match.Candidates(m.Name)
+		for _, c := range cands {
 			if sc, ok := sidecars[match.Key(m.RelFolder, c)]; ok {
 				m.sc = sc
 				if !match.TitleAgrees(m.Name, sc.Title) {
 					rep.Errors = append(rep.Errors, "title mismatch "+m.Name+" vs "+sc.Title)
 				}
 				break
+			}
+		}
+		if m.sc == nil {
+			for _, c := range cands {
+				if found := sidecarsFolded[match.FoldKey(m.RelFolder, c)]; len(found) == 1 {
+					m.sc = found[0]
+					break
+				}
 			}
 		}
 	}

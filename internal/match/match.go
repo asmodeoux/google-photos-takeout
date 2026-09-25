@@ -42,6 +42,9 @@ func Candidates(name string) []string {
 		add(n + ".json")
 		add(fit51(n + ".supplemental-metadata"))
 		add(fit51(n))
+		// Some exports name the sidecar "<name>.metadata.json".
+		add(n + ".metadata.json")
+		add(fit51(n + ".metadata"))
 	}
 	addNumbered := func(n string) {
 		bare, num, ok := stripNumber(n)
@@ -147,4 +150,10 @@ func TitleAgrees(mediaName, title string) bool {
 		return true
 	}
 	return false
+}
+
+// FoldKey is Key compared without regard to case. Google sometimes writes
+// "IMG.JPG" next to "IMG.jpg.json".
+func FoldKey(folder, name string) string {
+	return folder + "\x00" + strings.ToLower(name)
 }

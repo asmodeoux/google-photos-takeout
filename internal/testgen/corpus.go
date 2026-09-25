@@ -101,6 +101,19 @@ func Corpus() *Takeout {
 	t.Put(1, y19, "split.jpg", JPEG(next()))
 	t.SideAs(2, y19, "split.jpg.supplemental-metadata.json", "split.jpg", Side{Taken: at(2019, 7, 6, 9, 0, 0)})
 
+	t.Row("gpth-46-sidecar-name-case-differs")
+	t.Put(1, y19, "IMG_CASE.JPG", JPEG(next()))
+	t.SideAs(1, y19, "IMG_CASE.jpg.supplemental-metadata.json", "IMG_CASE.JPG", Side{Taken: at(2019, 7, 12, 9, 0, 0)})
+
+	t.Row("gpth-46-two-case-variant-sidecars-match-neither")
+	t.Put(1, y19, "AMB.jpg", JPEG(next()))
+	t.SideAs(1, y19, "amb.JPG.json", "amb.JPG", Side{Taken: at(2019, 7, 13, 9, 0, 0)})
+	t.SideAs(1, y19, "Amb.Jpg.json", "Amb.Jpg", Side{Taken: at(2019, 7, 14, 9, 0, 0)})
+
+	t.Row("gpth-460-metadata-json-variant")
+	t.Put(1, y19, "meta.jpg", JPEG(next()))
+	t.SideAs(1, y19, "meta.jpg.metadata.json", "meta.jpg", Side{Taken: at(2019, 7, 15, 9, 0, 0)})
+
 	t.Row("sidecar-same-name-other-folder-does-not-match")
 	t.Put(1, y19, "lonely.jpg", JPEG(next()))
 	t.SideAs(1, "Photos from 2018", "lonely.jpg.supplemental-metadata.json", "lonely.jpg", Side{Taken: at(2018, 7, 7, 9, 0, 0)})
