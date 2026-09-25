@@ -149,7 +149,22 @@ func TitleAgrees(mediaName, title string) bool {
 	if stripped != mediaName && TitleAgrees(stripped, title) {
 		return true
 	}
-	return false
+	// A Live Photo's video half may share a sidecar titled with the still's
+	// name: IMG_1.MOV and IMG_1.HEIC, or PXL_1.MP and PXL_1.MP.jpg.
+	return strings.EqualFold(LiveStem(a), LiveStem(b))
+}
+
+// LiveStem is the name both halves of a Live or motion photo share: the name
+// without its extension and without a Pixel ".MP" or ".MV" marker, so that
+// PXL_1.MP.jpg, PXL_1.MP and PXL_1.MP~2 all give PXL_1.
+func LiveStem(name string) string {
+	stem := strings.TrimSuffix(name, path.Ext(name))
+	for _, m := range []string{".MP", ".MV"} {
+		if len(stem) > len(m) && strings.EqualFold(stem[len(stem)-len(m):], m) {
+			return stem[:len(stem)-len(m)]
+		}
+	}
+	return stem
 }
 
 // FoldKey is Key compared without regard to case. Google sometimes writes

@@ -144,3 +144,25 @@ func TestFromFilenameDateOnly(t *testing.T) {
 		t.Fatalf("full timestamp: %+v", w)
 	}
 }
+
+func TestPinWallClockKeepsWallClock(t *testing.T) {
+	w := FromFilename("VID_20190914_160000.mp4", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	if !w.OK || w.OffsetKnown {
+		t.Fatalf("want a floating filename date, got %+v", w)
+	}
+	PinWallClock(&w, "Europe/Berlin")
+	if !w.OffsetKnown || w.Offset != 2*time.Hour || w.TZStep != TZDefault {
+		t.Fatalf("offset %v known %v step %s", w.Offset, w.OffsetKnown, w.TZStep)
+	}
+	if got := w.Local().Format("2006-01-02 15:04"); got != "2019-09-14 16:00" {
+		t.Fatalf("wall clock %s", got)
+	}
+	if got := w.Instant.UTC().Format("15:04"); got != "14:00" {
+		t.Fatalf("instant %s", got)
+	}
+	u := FromFilename("VID_20190914_160000.mp4", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	PinWallClock(&u, "")
+	if u.TZStep != TZUTC || u.Offset != 0 || u.Local().Hour() != 16 {
+		t.Fatalf("UTC fallback %+v", u)
+	}
+}

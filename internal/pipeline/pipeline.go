@@ -410,11 +410,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	readEmbedded(clients, opt, groups, &rep)
 	resolveDates(groups, opt)
 	pairLive(groups, &rep)
-	ws := whens(groups)
-	dates.ApplyFallback(ws, opt.DefaultTZ)
-	for i := range groups {
-		groups[i].when = ws[i]
-	}
+	applyZones(groups, opt.DefaultTZ)
 
 	times := &timeLog{}
 	pr.Phase("tags")
@@ -1085,7 +1081,7 @@ func pairLive(groups []group, rep *Report) {
 			byID[g.contentID] = append(byID[g.contentID], i)
 		}
 		folder := g.members[g.canon].RelFolder
-		stem := names.Stem(g.members[g.canon].Name)
+		stem := match.LiveStem(g.members[g.canon].Name)
 		byStem[folder+"\x00"+names.Key(stem)] = append(byStem[folder+"\x00"+names.Key(stem)], i)
 	}
 	link := func(a, b int) {
@@ -1165,11 +1161,13 @@ func pairLive(groups []group, rep *Report) {
 		if g.video {
 			continue // count pairs once, from the still
 		}
-		if !g.when.OK && other.when.OK {
+		// Both halves are one moment. A half dated only by its file name takes
+		// the other half's sidecar or embedded date, with its GPS.
+		if weakDate(g.when) && !weakDate(other.when) {
 			g.when = other.when
 			g.when.Source = dates.SrcLive
 		}
-		if other.video && !other.when.OK && g.when.OK {
+		if other.video && weakDate(other.when) && !weakDate(g.when) {
 			other.when = g.when
 			other.when.Source = dates.SrcLive
 		}
@@ -1190,6 +1188,24 @@ func pairLive(groups []group, rep *Report) {
 		}
 	}
 	rep.LivePairs /= 2
+}
+
+// applyZones picks an offset for every date that lacks one. Stills dated from
+// a file name stay without one; videos always get one.
+func applyZones(groups []group, defaultTZ string) {
+	ws := whens(groups)
+	dates.ApplyFallback(ws, defaultTZ)
+	for i := range groups {
+		groups[i].when = ws[i]
+		if videoSide(groups[i].trueType) || groups[i].video {
+			dates.PinWallClock(&groups[i].when, defaultTZ)
+		}
+	}
+}
+
+// weakDate is a date that is missing or only read from a file name.
+func weakDate(w dates.When) bool {
+	return !w.OK || w.Source == dates.SrcFilename || w.Source == dates.SrcFilenameDate
 }
 
 func imageSide(t string) bool {
@@ -1901,11 +1917,7 @@ func summarizeDry(opt Options, idx *zipindex.Index, groups []group, rep *Report)
 		}
 	}
 	pairLive(groups, rep)
-	ws := whens(groups)
-	dates.ApplyFallback(ws, opt.DefaultTZ)
-	for i := range groups {
-		groups[i].when = ws[i]
-	}
+	applyZones(groups, opt.DefaultTZ)
 	fillReport(rep, groups)
 	fs, _ := media.Stat(opt.Results)
 	if fs.Type == "" {

@@ -79,3 +79,26 @@ func TestCandidatesMetadataVariant(t *testing.T) {
 		t.Fatal("fold key")
 	}
 }
+
+func TestLiveHalvesShareTitle(t *testing.T) {
+	for _, c := range [][2]string{
+		{"IMG_0012.MOV", "IMG_0012.HEIC"},
+		{"PXL_1.MP", "PXL_1.MP.jpg"},
+		{"PXL_1.MP~2", "PXL_1.MP.jpg"},
+	} {
+		if !TitleAgrees(c[0], c[1]) {
+			t.Errorf("TitleAgrees(%q, %q) = false", c[0], c[1])
+		}
+	}
+	if TitleAgrees("IMG_0013.MOV", "IMG_0012.HEIC") {
+		t.Error("different stems agree")
+	}
+	for name, want := range map[string]string{
+		"PXL_1.MP.jpg": "PXL_1", "PXL_1.MP": "PXL_1", "PXL_1.MP~2": "PXL_1",
+		"PXL_1.mv.jpg": "PXL_1", "IMG_1.HEIC": "IMG_1", "clip.mp4": "clip",
+	} {
+		if got := LiveStem(name); got != want {
+			t.Errorf("LiveStem(%q) = %q, want %q", name, got, want)
+		}
+	}
+}

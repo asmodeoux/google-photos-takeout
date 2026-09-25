@@ -165,6 +165,23 @@ func Corpus() *Takeout {
 	t.Row("tiff-scan-tagged")
 	t.Photo(1, y19, "scan.tif", TIFFRAW(next()), &Side{Taken: at(2019, 9, 23, 9, 0, 0)})
 
+	t.Row("gpth-460-live-video-without-sidecar-takes-still-date")
+	lat, lon = geo(tokyo)
+	t.Photo(1, y19, "IMG_0010.HEIC", Unique(Fixture("still2.heic"), "live-c"), &Side{Taken: at(2019, 9, 10, 1, 0, 0), Lat: lat, Lon: lon})
+	t.Put(1, y19, "IMG_0010.MOV", Unique(Fixture("clip2.mov"), "live-c"))
+	t.Row("gpth-350-live-halves-share-a-sidecar-titled-as-still")
+	t.Put(1, y19, "IMG_0012.HEIC", Unique(Fixture("still2.heic"), "live-d"))
+	t.Put(1, y19, "IMG_0012.MOV", Unique(Fixture("clip2.mov"), "live-d"))
+	t.SideAs(1, y19, "IMG_0012.json", "IMG_0012.HEIC", Side{Taken: at(2019, 9, 12, 9, 0, 0)})
+	t.Row("gpth-180-pixel-mp-video-pairs-with-mp-jpg")
+	lat, lon = geo(la)
+	t.Photo(1, y19, "PXL_20190913_160000000.MP.jpg", JPEG(next()), &Side{Taken: at(2019, 9, 13, 16, 0, 0), Lat: lat, Lon: lon})
+	t.Put(1, y19, "PXL_20190913_160000000.MP", Unique(Fixture("clip2.mp4"), "live-e"))
+	t.Row("gpth-324-pixel-mp-tilde-copy-is-a-plain-video")
+	t.Put(1, y19, "PXL_20190914_160000000.MP.jpg", JPEG(next()))
+	t.Put(1, y19, "PXL_20190914_160000000.MP", Unique(Fixture("clip2.mp4"), "live-f"))
+	t.Put(1, y19, "PXL_20190914_160000000.MP~2", Unique(Fixture("clip2.mp4"), "live-g"))
+
 	t.Row("gif-gets-xmp-date-only")
 	t.Photo(1, y19, "anim.gif", GIF(next()), &Side{Taken: at(2019, 10, 1, 9, 0, 0)})
 

@@ -49,6 +49,29 @@
       "DateTimeOriginal": "2019:09:22 11:00:00",
       "OffsetTimeOriginal": "+02:00"
     },
+    "2019/IMG_0010.MOV": {
+      "ContentIdentifier": "live-2",
+      "CreateDate": "2019:09:10 01:00:00Z",
+      "CreationDate": "2019:09:10 10:00:00+09:00",
+      "GPSCoordinates": "35.6762 139.6503",
+      "GPSLatitude": "35.6762",
+      "GPSLongitude": "139.6503"
+    },
+    "2019/IMG_0010.heic": {
+      "DateTimeOriginal": "2019:09:10 10:00:00",
+      "GPSLatitude": "35.6762",
+      "GPSLongitude": "139.6503",
+      "OffsetTimeOriginal": "+09:00"
+    },
+    "2019/IMG_0012.MOV": {
+      "ContentIdentifier": "live-3",
+      "CreateDate": "2019:09:12 09:00:00Z",
+      "CreationDate": "2019:09:12 02:00:00-07:00"
+    },
+    "2019/IMG_0012.heic": {
+      "DateTimeOriginal": "2019:09:12 02:00:00",
+      "OffsetTimeOriginal": "-07:00"
+    },
     "2019/IMG_0100.heic": {
       "DateTimeOriginal": "2019:06:13 10:00:00",
       "GPSLatitude": "35.6762",
@@ -63,13 +86,38 @@
       "OffsetTimeOriginal": "+02:00"
     },
     "2019/PXL_0002.MOV": {
-      "ContentIdentifier": "live-2",
+      "ContentIdentifier": "live-4",
       "CreateDate": "2019:09:02 09:00:00Z",
       "CreationDate": "2019:09:02 18:00:00+09:00"
     },
     "2019/PXL_0002.jpg": {
       "DateTimeOriginal": "2019:09:02 18:00:00",
       "OffsetTimeOriginal": "+09:00"
+    },
+    "2019/PXL_20190913_160000000.MP.MOV": {
+      "ContentIdentifier": "live-5",
+      "CreateDate": "2019:09:13 16:00:00Z",
+      "CreationDate": "2019:09:13 09:00:00-07:00",
+      "GPSCoordinates": "34.0522 -118.2437",
+      "GPSLatitude": "34.0522",
+      "GPSLongitude": "-118.2437"
+    },
+    "2019/PXL_20190913_160000000.MP.jpg": {
+      "DateTimeOriginal": "2019:09:13 09:00:00",
+      "GPSLatitude": "34.0522",
+      "GPSLongitude": "-118.2437",
+      "OffsetTimeOriginal": "-07:00"
+    },
+    "2019/PXL_20190914_160000000.MP (2).jpg": {
+      "DateTimeOriginal": "2019:09:14 16:00:00"
+    },
+    "2019/PXL_20190914_160000000.MP.mp4": {
+      "CreateDate": "2019:09:14 14:00:00Z",
+      "CreationDate": "2019:09:14 16:00:00+02:00"
+    },
+    "2019/PXL_20190914_160000000.MP~2.mp4": {
+      "CreateDate": "2019:09:14 14:00:00Z",
+      "CreationDate": "2019:09:14 16:00:00+02:00"
     },
     "2019/RAW_0001.dng": {
       "DateTimeOriginal": "2019:09:20 02:00:00",
@@ -284,17 +332,23 @@
     ],
     "cr3_untagged": 1,
     "date_sources": {
-      "filename": 2,
+      "filename": 5,
       "filename-date": 2,
       "json-creation": 1,
-      "json-taken": 50
+      "json-taken": 54,
+      "live": 2
     },
     "errors": null,
     "extension_fixes": [
       "IMG_0001.HEIC -\u003e IMG_0001.heic",
       "IMG_0003.JPG -\u003e IMG_0003.jpg",
+      "IMG_0010.HEIC -\u003e IMG_0010.heic",
+      "IMG_0012.HEIC -\u003e IMG_0012.heic",
       "IMG_0100.HEIC -\u003e IMG_0100.heic",
       "IMG_CASE.JPG -\u003e IMG_CASE.jpg",
+      "PXL_20190913_160000000.MP -\u003e PXL_20190913_160000000.MP.MOV",
+      "PXL_20190914_160000000.MP -\u003e PXL_20190914_160000000.MP.mp4",
+      "PXL_20190914_160000000.MP~2 -\u003e PXL_20190914_160000000.MP~2.mp4",
       "actually-png.jpg -\u003e actually-png.png",
       "clip.webm -\u003e clip.mov",
       "old.mkv -\u003e old.mov",
@@ -303,37 +357,37 @@
     "formats": {
       "cr3": 1,
       "gif": 1,
-      "heic": 2,
-      "jpeg": 40,
-      "mov": 4,
-      "mp4": 3,
+      "heic": 4,
+      "jpeg": 42,
+      "mov": 6,
+      "mp4": 6,
       "png": 3,
       "raw": 2,
       "tiff": 1,
       "webp": 1
     },
-    "library": 55,
-    "live_pairs": 2,
-    "media": 61,
+    "library": 64,
+    "live_pairs": 5,
+    "media": 70,
     "names_rule": "apple",
     "placeholders": 0,
-    "sidecars": 56,
+    "sidecars": 59,
     "symlinks_skipped": 1,
     "system_files_ignored": 5,
     "tag_errors": 0,
     "timezone_steps": {
-      "default": 36,
-      "filename": 4,
-      "gps": 7,
-      "neighbor": 8
+      "default": 38,
+      "filename": 5,
+      "gps": 11,
+      "neighbor": 10
     },
-    "unique": 59,
+    "unique": 68,
     "unknown": 3,
     "years": {
       "2016": 1,
       "2017": 1,
       "2018": 1,
-      "2019": 52
+      "2019": 61
     }
   }
 }

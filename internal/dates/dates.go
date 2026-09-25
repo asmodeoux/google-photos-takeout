@@ -286,6 +286,30 @@ func ApplyFallback(files []When, defaultTZ string) {
 	}
 }
 
+// PinWallClock gives a date with no known offset the offset of defaultTZ (UTC
+// when empty or invalid) at the same wall-clock time. Videos need it: their
+// creation date must carry a zone, and without one ExifTool would use the
+// computer's zone.
+func PinWallClock(w *When, defaultTZ string) {
+	if !w.OK || w.OffsetKnown {
+		return
+	}
+	wall := w.Instant.UTC()
+	loc, step := time.UTC, TZUTC
+	if defaultTZ != "" {
+		if l, err := time.LoadLocation(defaultTZ); err == nil {
+			loc, step = l, TZDefault
+		}
+	}
+	t := time.Date(wall.Year(), wall.Month(), wall.Day(), wall.Hour(), wall.Minute(), wall.Second(), wall.Nanosecond(), loc)
+	_, s := t.Zone()
+	w.Instant = t
+	w.Offset = time.Duration(s) * time.Second
+	w.OffsetKnown = true
+	w.TZStep = step
+	w.Year = wall.Year()
+}
+
 var patterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?P<d>(?:20|19|18)\d{2}(?:0[1-9]|1[0-2])[0-3]\d-[0-2]\d[0-5]\d[0-5]\d)`),
 	regexp.MustCompile(`(?P<d>(?:20|19|18)\d{2}(?:0[1-9]|1[0-2])[0-3]\d_[0-2]\d[0-5]\d[0-5]\d)`),

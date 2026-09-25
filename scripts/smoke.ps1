@@ -31,7 +31,7 @@ try {
 
     $report = Get-Content (Join-Path $out ".takeout\report.json") -Raw | ConvertFrom-Json
     if ($report.tag_errors -ne 0) { throw "tag errors: $($report.errors -join '; ')" }
-    if ($report.live_pairs -ne 2) { throw "live pairs: $($report.live_pairs)" }
+    if ($report.live_pairs -ne 5) { throw "live pairs: $($report.live_pairs)" }
     if ($report.names_rule -ne "portable") { throw "names rule: $($report.names_rule)" }
     $leftover = Get-ChildItem -Path $out -Recurse -Filter "*_exiftool_tmp" -ErrorAction SilentlyContinue
     if ($leftover) { throw "ExifTool temp files left: $leftover" }
