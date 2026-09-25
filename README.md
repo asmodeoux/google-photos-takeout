@@ -242,7 +242,8 @@ With a prebuilt binary use `.\takeout.exe` or `./takeout`. `takeout <command> -h
 | `years`, `formats` | Files per year folder and per detected type. |
 | `date_sources`, `timezone_steps` | Where each date and time zone came from. |
 | `with_gps` | Files with a real location. |
-| `cr3_untagged` | Canon CR3 files placed with their camera date; tags are not written into CR3. |
+| `untagged` | Files placed with their file dates only, because ExifTool cannot write that format: Canon CR3, AVI, MPEG, WMV, MTS, BMP. |
+| `failed`, `failed_files` | Files from the zips that are not in the library (a damaged zip entry, a file that could not be placed), with the reason. Exit code 3. |
 | `system_files_ignored`, `symlinks_skipped` | `._` files, `.DS_Store`, `Thumbs.db`, `__MACOSX` entries and symbolic links in the zips. |
 | `names_rule`, `names_reason`, `album_renames` | The naming rule used, why, and album folders whose names had to change. |
 | `extension_fixes` | Files whose extension did not match their content, such as a PNG named `.jpg`. |

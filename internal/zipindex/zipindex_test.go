@@ -61,13 +61,19 @@ func TestSniff(t *testing.T) {
 		t.Fatal("mov")
 	}
 	for head, want := range map[string]string{
-		"II*\x00\x08\x00\x00\x00":          "tiff",
-		"MM\x00*\x00\x00\x00\x08":          "tiff",
-		"IIRO\x08\x00\x00\x00":             "raw",
-		"IIU\x00\x08\x00\x00\x00":          "raw",
-		"FUJIFILMCCD-RAW 0201":             "raw",
-		"\x00\x00\x00\x18ftypcrx \x00\x00": "cr3",
-		"\x00\x00\x00\x18ftypisom\x00\x00": "mp4",
+		"II*\x00\x08\x00\x00\x00":                         "tiff",
+		"MM\x00*\x00\x00\x00\x08":                         "tiff",
+		"IIRO\x08\x00\x00\x00":                            "raw",
+		"IIU\x00\x08\x00\x00\x00":                         "raw",
+		"FUJIFILMCCD-RAW 0201":                            "raw",
+		"\x00\x00\x00\x18ftypcrx \x00\x00":                "cr3",
+		"\x00\x00\x00\x18ftypisom\x00\x00":                "mp4",
+		"RIFF\x10\x00\x00\x00AVI LIST":                    "avi",
+		"RIFF\x10\x00\x00\x00WEBPVP8 ":                    "webp",
+		"\x00\x00\x01\xba\x44\x00":                        "mpg",
+		"\x30\x26\xb2\x75\x8e\x66\xcf\x11":                "wmv",
+		"BM:\x00\x00\x00\x00\x00\x00\x00\x36\x00\x00\x00": "bmp",
+		"BMW text file":                                   "unknown",
 	} {
 		if got := Sniff([]byte(head)); got != want {
 			t.Errorf("Sniff(%q) = %s, want %s", head, got, want)

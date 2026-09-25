@@ -164,3 +164,33 @@ func CR3(seed int) []byte {
 	b.WriteString("crx isom")
 	return Unique(b.Bytes(), fmt.Sprintf("cr3-%d", seed))
 }
+
+// AVI returns the start of a RIFF AVI file, a format ExifTool cannot write.
+func AVI(seed int) []byte {
+	var b bytes.Buffer
+	b.WriteString("RIFF")
+	binary.Write(&b, binary.LittleEndian, uint32(4+12))
+	b.WriteString("AVI LIST")
+	binary.Write(&b, binary.LittleEndian, uint32(4))
+	b.WriteString("hdrl")
+	b.WriteString(fmt.Sprintf("seed-%d", seed))
+	return b.Bytes()
+}
+
+// BMP returns a 1x1 Windows bitmap.
+func BMP(seed int) []byte {
+	var b bytes.Buffer
+	le := binary.LittleEndian
+	b.WriteString("BM")
+	binary.Write(&b, le, uint32(58))
+	binary.Write(&b, le, uint32(0))
+	binary.Write(&b, le, uint32(54))
+	binary.Write(&b, le, uint32(40))
+	binary.Write(&b, le, int32(1))
+	binary.Write(&b, le, int32(1))
+	binary.Write(&b, le, uint16(1))
+	binary.Write(&b, le, uint16(24))
+	binary.Write(&b, le, [6]uint32{0, 4, 2835, 2835, 0, 0})
+	b.Write([]byte{byte(seed), byte(seed >> 8), 0xff, 0})
+	return b.Bytes()
+}

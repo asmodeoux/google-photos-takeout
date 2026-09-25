@@ -16,7 +16,7 @@ Windows support, and fixes for export layouts reported against other Takeout too
 - Sidecars whose name differs only in case, and `.metadata.json` sidecars, are matched.
 - Dates from file names with a day but no time (`IMG-20190101-WA0001.jpg`), at noon.
 - Exports whose Google Photos folder is named in an unlisted language are found.
-- report.json: `names_rule`, `names_reason`, `album_renames`, `tag_error_files`, `retries`, `seconds`, `files_per_second`, `exiftool_version`, `export_ids`, `system_files_ignored`, `symlinks_skipped`, `cr3_untagged`, `birth_time_errors`.
+- report.json: `names_rule`, `names_reason`, `album_renames`, `tag_error_files`, `retries`, `seconds`, `files_per_second`, `exiftool_version`, `export_ids`, `system_files_ignored`, `symlinks_skipped`, `untagged`, `failed`, `failed_files`, `birth_time_errors`.
 - Every preflight error prints a `Fix:` line and a README section. `check` ends with the command to run next.
 
 ### Fixed

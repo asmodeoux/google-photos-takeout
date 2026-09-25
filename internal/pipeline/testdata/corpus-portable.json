@@ -217,6 +217,7 @@
       "GPSLongitude": "37.6173",
       "OffsetTimeOriginal": "+03:00"
     },
+    "2019/old-camera.avi": {},
     "2019/old.mov": {
       "CreateDate": "2019:08:04 09:00:00Z",
       "CreationDate": "2019:08:04 11:00:00+02:00"
@@ -234,10 +235,11 @@
       "DateTimeOriginal": "2019:06:11 11:00:00",
       "OffsetTimeOriginal": "+02:00"
     },
-    "2019/scan.tif": {
+    "2019/scan (2).tif": {
       "DateTimeOriginal": "2019:09:23 11:00:00",
       "OffsetTimeOriginal": "+02:00"
     },
+    "2019/scan.bmp": {},
     "2019/short.jpg": {
       "DateTimeOriginal": "2019:07:01 11:00:00",
       "OffsetTimeOriginal": "+02:00"
@@ -339,12 +341,11 @@
       "trailing dot. -\u003e trailing dot",
       "trip -\u003e trip (2)"
     ],
-    "cr3_untagged": 1,
     "date_sources": {
       "filename": 5,
       "filename-date": 2,
       "json-creation": 2,
-      "json-taken": 55,
+      "json-taken": 57,
       "live": 2
     },
     "errors": null,
@@ -363,7 +364,10 @@
       "old.mkv -\u003e old.mov",
       "PXL_0002.mp4 -\u003e PXL_0002.MOV"
     ],
+    "failed": 0,
     "formats": {
+      "avi": 1,
+      "bmp": 1,
       "cr3": 1,
       "gif": 1,
       "heic": 4,
@@ -375,29 +379,30 @@
       "tiff": 1,
       "webp": 1
     },
-    "library": 66,
+    "library": 68,
     "live_pairs": 5,
-    "media": 72,
+    "media": 74,
     "names_rule": "portable",
     "placeholders": 0,
-    "sidecars": 61,
+    "sidecars": 63,
     "symlinks_skipped": 1,
     "system_files_ignored": 5,
     "tag_errors": 0,
     "timezone_steps": {
-      "default": 40,
+      "default": 42,
       "filename": 5,
       "gps": 11,
       "neighbor": 10
     },
-    "unique": 70,
+    "unique": 72,
     "unknown": 3,
+    "untagged": 3,
     "years": {
       "1965": 1,
       "2016": 1,
       "2017": 1,
       "2018": 1,
-      "2019": 62
+      "2019": 64
     }
   }
 }

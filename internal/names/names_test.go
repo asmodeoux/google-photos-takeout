@@ -59,6 +59,11 @@ func TestOutputExt(t *testing.T) {
 	if OutputExt("webm", "clip.webm", false) != ".webm" || OutputExt("webm", "old.MKV", false) != ".mkv" {
 		t.Fatal("untranscoded webm/mkv")
 	}
+	for _, n := range []string{"scan.bmp", "old.avi", "tape.MPG", "clip.wmv", "cam.MTS"} {
+		if got := ReplaceExt(n, OutputExt("unknown", n, false)); got != n {
+			t.Errorf("ReplaceExt(%q) = %q", n, got)
+		}
+	}
 	if ReplaceExt("18.12.12 - 8", ".png") != "18.12.12 - 8.png" {
 		t.Fatal("extensionless")
 	}

@@ -84,7 +84,7 @@ type Report struct {
 	IDCopied       int            `json:"identifier_copied"`
 	TagErrors      int            `json:"tag_errors"`
 	Motions        int            `json:"motion_photos"`
-	CR3Untagged    int            `json:"cr3_untagged"` // placed without tag writes
+	Untagged       int            `json:"untagged"` // placed with file dates only: CR3, AVI and other formats ExifTool does not write
 	Screenshots    int            `json:"screenshots_excluded"`
 	Unique         int            `json:"unique"`
 	WithGPS        int            `json:"with_gps"`
@@ -494,7 +494,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	toTag := 0
 	for i := range groups {
 		g := &groups[i]
-		if !g.skip && !g.placeholder && g.staged != "" && g.trueType != "webm" && g.trueType != "cr3" {
+		if needsTags(g) {
 			toTag++
 		}
 	}
@@ -1005,6 +1005,22 @@ func bytesContains(b, sub []byte) bool {
 	return len(sub) == 0 || (len(b) >= len(sub) && func() bool { return strings.Contains(string(b), string(sub)) }())
 }
 
+// canTag reports the kinds ExifTool can write dates and GPS into. Others, such
+// as CR3, AVI, MPEG, BMP and WMV, are placed with their file dates only.
+// WebM is converted to MOV first, when ffmpeg is there.
+func canTag(kind string) bool {
+	switch kind {
+	case "jpeg", "png", "gif", "webp", "heic", "tiff", "raw", "mov", "mp4":
+		return true
+	}
+	return false
+}
+
+// needsTags is the one rule for which groups go to ExifTool for tags.
+func needsTags(g *group) bool {
+	return !g.skip && !g.placeholder && g.failErr == "" && g.staged != "" && canTag(g.trueType)
+}
+
 // kindOf sniffs a file's type from its first bytes. A TIFF whose name has a
 // camera RAW extension is raw.
 func kindOf(head []byte, name string) string {
@@ -1026,6 +1042,16 @@ func kindFromExt(p string) string {
 		return "raw"
 	case ".cr3":
 		return "cr3"
+	case ".avi":
+		return "avi"
+	case ".mpg", ".mpeg", ".vob":
+		return "mpg"
+	case ".wmv", ".asf":
+		return "wmv"
+	case ".mts", ".m2ts":
+		return "mts"
+	case ".bmp":
+		return "bmp"
 	case ".tif", ".tiff":
 		return "tiff"
 	case ".jpg", ".jpeg":
@@ -1470,7 +1496,7 @@ func tagAll(ctx context.Context, force <-chan struct{}, grace time.Duration, run
 feed:
 	for i := range groups {
 		g := &groups[i]
-		if g.skip || g.placeholder || g.staged == "" || g.trueType == "webm" || g.trueType == "cr3" {
+		if !needsTags(g) {
 			continue
 		}
 		if rec, ok := journal.Get(g.id); ok && rec.Stage == "tagged" {
@@ -1993,8 +2019,8 @@ func fillReport(rep *Report, groups []group) {
 			rep.Formats = map[string]int{}
 		}
 		rep.Formats[kind]++
-		if kind == "cr3" {
-			rep.CR3Untagged++
+		if !canTag(kind) {
+			rep.Untagged++
 		}
 		if g.when.HasGPS {
 			rep.WithGPS++
@@ -2029,7 +2055,7 @@ func verifyTags(clients []*exiftool.Client, results string, groups []group, rep 
 	var items []item
 	for i := range groups {
 		g := &groups[i]
-		if g.outRel == "" || !g.when.OK || g.placeholder || g.trueType == "gif" || g.trueType == "webm" || g.trueType == "cr3" {
+		if g.outRel == "" || !g.when.OK || g.placeholder || g.trueType == "gif" || !canTag(g.trueType) {
 			continue
 		}
 		if g.when.Source == dates.SrcEmbedded {

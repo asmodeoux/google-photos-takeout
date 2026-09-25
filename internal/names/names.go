@@ -221,7 +221,8 @@ func knownExt(e string) bool {
 	switch e {
 	case ".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".heif",
 		".mp4", ".mov", ".m4v", ".3gp", ".3g2", ".mkv", ".webm", ".avi",
-		".tif", ".tiff", ".dng", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srw", ".pef", ".orf", ".rw2", ".raf":
+		".tif", ".tiff", ".dng", ".cr2", ".cr3", ".nef", ".nrw", ".arw", ".srw", ".pef", ".orf", ".rw2", ".raf",
+		".bmp", ".mpg", ".mpeg", ".vob", ".wmv", ".asf", ".mts", ".m2ts":
 		return true
 	}
 	return false

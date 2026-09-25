@@ -346,10 +346,10 @@ func IsSkippedJSON(name string) bool {
 	return false
 }
 
-// Sniff returns jpeg, png, gif, webp, heic, mov, mp4, webm, tiff, raw, cr3, or
-// unknown. tiff covers TIFF-based camera RAW such as DNG, CR2, NEF and ARW; raw
-// is a RAW format with its own header (ORF, RW2, RAF); cr3 is Canon's ISO-BMFF
-// RAW, which must not be mistaken for a video.
+// Sniff returns jpeg, png, gif, webp, heic, mov, mp4, webm, tiff, raw, cr3,
+// avi, mpg, wmv, bmp, or unknown. tiff covers TIFF-based camera RAW such as
+// DNG, CR2, NEF and ARW; raw is a RAW format with its own header (ORF, RW2,
+// RAF); cr3 is Canon's ISO-BMFF RAW, which must not be mistaken for a video.
 func Sniff(b []byte) string {
 	if len(b) >= 3 && b[0] == 0xff && b[1] == 0xd8 && b[2] == 0xff {
 		return "jpeg"
@@ -362,6 +362,18 @@ func Sniff(b []byte) string {
 	}
 	if len(b) >= 12 && bytes.Equal(b[:4], []byte("RIFF")) && bytes.Equal(b[8:12], []byte("WEBP")) {
 		return "webp"
+	}
+	if len(b) >= 12 && bytes.Equal(b[:4], []byte("RIFF")) && bytes.Equal(b[8:12], []byte("AVI ")) {
+		return "avi"
+	}
+	if len(b) >= 4 && bytes.Equal(b[:4], []byte{0, 0, 1, 0xba}) {
+		return "mpg"
+	}
+	if len(b) >= 4 && bytes.Equal(b[:4], []byte{0x30, 0x26, 0xb2, 0x75}) {
+		return "wmv"
+	}
+	if len(b) >= 2 && b[0] == 'B' && b[1] == 'M' && len(b) >= 14 && b[6] == 0 && b[7] == 0 && b[8] == 0 && b[9] == 0 {
+		return "bmp"
 	}
 	if len(b) >= 4 && b[0] == 0x1a && b[1] == 0x45 && b[2] == 0xdf && b[3] == 0xa3 {
 		return "webm"

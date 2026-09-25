@@ -186,6 +186,10 @@ func Corpus() *Takeout {
 	t.Put(1, y19, "PXL_20190914_160000000.MP", Unique(Fixture("clip2.mp4"), "live-f"))
 	t.Put(1, y19, "PXL_20190914_160000000.MP~2", Unique(Fixture("clip2.mp4"), "live-g"))
 
+	t.Row("avi-and-bmp-placed-with-file-dates-only")
+	t.Photo(1, y19, "old-camera.avi", AVI(next()), &Side{Taken: at(2019, 9, 24, 9, 0, 0)})
+	t.Photo(1, y19, "scan.bmp", BMP(next()), &Side{Taken: at(2019, 9, 25, 9, 0, 0)})
+
 	t.Row("gif-gets-xmp-date-only")
 	t.Photo(1, y19, "anim.gif", GIF(next()), &Side{Taken: at(2019, 10, 1, 9, 0, 0)})
 
