@@ -15,6 +15,7 @@ import (
 
 	"github.com/asmodeoux/google-photos-takeout/internal/state"
 	"github.com/asmodeoux/google-photos-takeout/internal/testgen"
+	"github.com/asmodeoux/google-photos-takeout/internal/zipindex"
 )
 
 // crashTakeout is a small export: a.jpg is in the year folder and in two
@@ -212,4 +213,34 @@ func TestResumeAfterTornJournalLine(t *testing.T) {
 	runOK(t, arch, results)
 	runOK(t, arch, results)
 	sameFiles(t, before, snapshot(t, results))
+}
+
+// A resumed run needs room only for what is not done yet.
+func TestPendingLeavesOutFinishedFiles(t *testing.T) {
+	requireTools(t, "exiftool")
+	arch, results := crashTakeout(t)
+	runOK(t, arch, results)
+	j, err := state.OpenJournal(filepath.Join(results, ".takeout", "state.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	mk := func(id string, folders ...string) group {
+		g := group{id: id}
+		for _, f := range folders {
+			g.members = append(g.members, member{Entry: zipindex.Entry{RelFolder: f, Name: "x.jpg", Size: 1000}})
+		}
+		return g
+	}
+	a := lastRecord(t, results, "2019/a.jpg")
+	b := lastRecord(t, results, "2019/b.jpg")
+	groups := []group{mk(a.ID, "Photos from 2019", "Trip"), mk(b.ID, "Photos from 2019"), mk("new", "Photos from 2019", "Trip")}
+	if got := estimate(pending(groups, j, results), false, "copy"); got != 2200 {
+		t.Fatalf("need %d bytes for the unfinished file and its album copy, want 2200", got)
+	}
+	// a.jpg placed but its albums not made yet: only the album copy is needed.
+	j.Put(state.Rec{ID: a.ID, SHA: a.SHA, Stage: "placed", Path: a.Path})
+	if got := estimate(pending(groups, j, results), false, "copy"); got != 3300 {
+		t.Fatalf("need %d, want 3300", got)
+	}
 }

@@ -120,3 +120,22 @@ func TestPlacedWebMSurvivesRerunWithFFmpeg(t *testing.T) {
 		t.Fatalf("verify exit %d: %v", vcode, verr)
 	}
 }
+
+// After an interrupted run, verify must not pass on the previous run's report.
+func TestVerifyAfterInterruptedRunIsNotOK(t *testing.T) {
+	requireTools(t, "exiftool")
+	dir := t.TempDir()
+	arch := writeTakeout(t, dir, map[string][]byte{"a.jpg": testgen.JPEG(1), "b.jpg": testgen.JPEG(2)})
+	results := filepath.Join(dir, "results")
+	if code, _, err := Run(context.Background(), testOptions(arch, results)); code != ExitOK {
+		t.Fatalf("run exit %d: %v", code, err)
+	}
+	opt := testOptions(arch, results)
+	opt.FailAfter = 1
+	if code, _, _ := Run(context.Background(), opt); code != ExitInterrupt {
+		t.Fatalf("interrupted run exit %d", code)
+	}
+	if vcode, _, _ := Verify(context.Background(), Options{Results: results}); vcode == ExitOK {
+		t.Fatal("verify passed on a stale report")
+	}
+}

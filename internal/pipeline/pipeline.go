@@ -197,7 +197,10 @@ type group struct {
 	// failErr is set when the file never reached the library: the zip entry
 	// could not be read or the file could not be placed.
 	failErr string
-	skip    bool
+	// albumsOnly marks a copy made by pending: the file is placed and only its
+	// album copies still need space.
+	albumsOnly bool
+	skip       bool
 }
 
 // Run executes check, unzip, or the full organize.
@@ -404,8 +407,24 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if err != nil {
 		return ExitPreflight, rep, err
 	}
+	release, err := state.Lock(filepath.Join(opt.Results, ".takeout"))
+	if err != nil {
+		if errors.Is(err, state.ErrLocked) {
+			err = errLocked(err)
+		}
+		return ExitPreflight, rep, err
+	}
+	defer release()
+	journal, err := state.OpenJournal(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	defer journal.Close()
+	// A report from an earlier run must not answer verify for this one.
+	_ = os.Remove(filepath.Join(opt.Results, ".takeout", "report.json"))
 	rep.Filesystem = fs.Type
-	need := estimate(groups, fs.APFS, opt.Albums)
+	// On resume, files already in results take no more space.
+	need := estimate(pending(groups, journal, opt.Results), fs.APFS, opt.Albums)
 	if fs.Free > 0 && fs.Free < need {
 		return ExitPreflight, rep, errDiskSpace(need/1e9, fs.Free/1e9, opt.Results, fs.Type, runtime.GOOS)
 	}
@@ -426,19 +445,6 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		fmt.Fprintf(opt.Stdout, "note: %s is not APFS, so album folders are full copies (about %.1f GB more). --albums none skips them.\n", fs.Type, float64(extra)/1e9)
 	}
 
-	release, err := state.Lock(filepath.Join(opt.Results, ".takeout"))
-	if err != nil {
-		if errors.Is(err, state.ErrLocked) {
-			err = errLocked(err)
-		}
-		return ExitPreflight, rep, err
-	}
-	defer release()
-	journal, err := state.OpenJournal(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
-	if err != nil {
-		return ExitPreflight, rep, err
-	}
-	defer journal.Close()
 	cleanPartial(filepath.Join(opt.Results, ".takeout", "staging"))
 
 	phase("copy", "copy")
@@ -1934,13 +1940,49 @@ func checkUnzipDest(dest string, idx *zipindex.Index) error {
 	return nil
 }
 
+// pending leaves out groups that an earlier run finished, including their
+// album copies, and keeps album members only for groups whose file is placed
+// but whose albums are not done.
+func pending(gs []group, journal *state.Journal, results string) []group {
+	var out []group
+	for _, g := range gs {
+		rec, ok := journal.Get(g.id)
+		if !ok || rec.Path == "" {
+			out = append(out, g)
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(results, filepath.FromSlash(rec.Path))); err != nil {
+			out = append(out, g)
+			continue
+		}
+		if rec.Stage == "cloned" {
+			continue
+		}
+		// The file is placed; only album copies may still be made.
+		albumsOnly := g
+		albumsOnly.albumsOnly = true
+		albumsOnly.members = nil
+		for _, m := range g.members {
+			if zipindex.Classify(m.RelFolder) == zipindex.ClassAlbum {
+				albumsOnly.members = append(albumsOnly.members, m)
+			}
+		}
+		if len(albumsOnly.members) > 0 {
+			out = append(out, albumsOnly)
+		}
+	}
+	return out
+}
+
 func estimate(gs []group, apfs bool, albums string) uint64 {
 	var n uint64
 	for _, g := range gs {
 		if len(g.members) == 0 {
 			continue
 		}
-		n += g.members[0].Size
+		if !g.albumsOnly {
+			n += g.members[0].Size
+		}
 		if !apfs && albums != "none" {
 			for _, m := range g.members {
 				if zipindex.Classify(m.RelFolder) == zipindex.ClassAlbum {
