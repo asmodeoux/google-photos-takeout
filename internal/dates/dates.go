@@ -249,7 +249,10 @@ func ApplyFallback(files []When, defaultTZ string) {
 	}
 	for i := range files {
 		w := &files[i]
-		if !w.OK || w.OffsetKnown || w.Source == SrcFilename || w.Source == SrcFilenameDate || w.Source == SrcUnknown || w.Source == "" {
+		// A wall clock with no zone (a file name, or a camera date without an
+		// offset) is stored as if it were UTC. Adding an offset here would
+		// move it; it stays a wall clock, and videos pin it with PinWallClock.
+		if !w.OK || w.OffsetKnown || w.TZStep == TZFilename || w.Source == SrcFilename || w.Source == SrcFilenameDate || w.Source == SrcUnknown || w.Source == "" {
 			continue
 		}
 		best := time.Duration(1 << 62)

@@ -182,3 +182,20 @@ func TestTakenInBoundsAcceptsOldScans(t *testing.T) {
 		t.Error("InBounds must still reject 1965 for file names and camera clocks")
 	}
 }
+
+// A camera date with no offset is a wall clock. The fallback zone must not
+// shift it into the next year.
+func TestFallbackKeepsEmbeddedWallClock(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	dto := time.Date(2019, 12, 31, 23, 30, 0, 0, time.UTC)
+	w := FromEmbedded(Embedded{DTO: &dto, HasDTO: true}, now)
+	ws := []When{w}
+	ApplyFallback(ws, "Europe/Moscow")
+	if ws[0].Year != 2019 || ws[0].Local().Format("2006-01-02 15:04") != "2019-12-31 23:30" {
+		t.Fatalf("year %d local %s", ws[0].Year, ws[0].Local())
+	}
+	PinWallClock(&ws[0], "Europe/Moscow")
+	if got := ws[0].Local().Format("2006-01-02 15:04 -07:00"); got != "2019-12-31 23:30 +03:00" {
+		t.Fatalf("pinned %s", got)
+	}
+}
