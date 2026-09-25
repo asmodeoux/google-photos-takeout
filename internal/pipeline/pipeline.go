@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"os/exec"
 	"path"
@@ -22,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/asmodeoux/google-photos-takeout/internal/dates"
@@ -106,7 +108,49 @@ type Report struct {
 	NamesRule      string         `json:"names_rule,omitempty"`
 	NamesReason    string         `json:"names_reason,omitempty"`
 	AlbumRenames   []string       `json:"album_renames,omitempty"`
-	Import         string         `json:"import"`
+	TagErrorFiles  []TagErrorFile `json:"tag_error_files,omitempty"`
+	Retries        Retries        `json:"retries"`
+	// Seconds is the wall time of each phase. FilesPerSecond is for tags.
+	Seconds        map[string]float64 `json:"seconds,omitempty"`
+	FilesPerSecond float64            `json:"files_per_second,omitempty"`
+	Import         string             `json:"import"`
+}
+
+// TagErrorFile is one file whose tags could not be written or read back.
+type TagErrorFile struct {
+	Path   string `json:"path"`
+	Stderr string `json:"stderr"`
+}
+
+// maxTagErrorFiles bounds tag_error_files in the report.
+const maxTagErrorFiles = 40
+
+// Retries counts waits for another process, usually antivirus or the search
+// indexer, to let go of a file.
+type Retries struct {
+	Rename int64 `json:"rename"`
+	Tag    int64 `json:"tag"`
+}
+
+// tagRetries counts ExifTool writes retried after a file-lock error.
+var tagRetries atomic.Int64
+
+// phaseTimer records how long each phase takes.
+type phaseTimer struct {
+	name  string
+	start time.Time
+	secs  map[string]float64
+}
+
+func (t *phaseTimer) next(name string) {
+	now := time.Now()
+	if t.secs == nil {
+		t.secs = map[string]float64{}
+	}
+	if t.name != "" {
+		t.secs[t.name] += math.Round(now.Sub(t.start).Seconds()*100) / 100
+	}
+	t.name, t.start = name, now
 }
 
 type scInfo struct {
@@ -175,7 +219,13 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if len(zips) == 0 {
 		return ExitPreflight, rep, errNoZips(opt.Archives, opt.Launcher, runtime.GOOS)
 	}
-	pr.Phase(fmt.Sprintf("index  %d zip(s)", len(zips)))
+	timer := &phaseTimer{}
+	renameStart, tagStart := media.RenameRetries.Load(), tagRetries.Load()
+	phase := func(name, label string) {
+		timer.next(name)
+		pr.Phase(label)
+	}
+	phase("index", fmt.Sprintf("index  %d zip(s)", len(zips)))
 	idx, err := zipindex.Open(zips)
 	if err != nil {
 		return ExitPreflight, rep, err
@@ -210,7 +260,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		if err := checkUnzipDest(dest, idx); err != nil {
 			return ExitPreflight, rep, err
 		}
-		pr.Phase("unzip")
+		phase("unzip", "unzip")
 		if err := unzipAll(ctx, zips, filepath.Join(filepath.Dir(opt.Archives), "unzipped")); err != nil {
 			return ExitPreflight, rep, err
 		}
@@ -235,7 +285,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	sidecarsFolded := map[string][]*scInfo{}
 	var items []member
 	var skippedJSON []zipindex.Entry
-	pr.Phase("read sidecars")
+	phase("sidecars", "read sidecars")
 	var systemFiles, symlinks []zipindex.Entry
 	for _, e := range idx.Entries {
 		if e.System {
@@ -307,7 +357,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 
 	groups := groupBy(items)
-	pr.Phase("confirm duplicates")
+	phase("duplicates", "confirm duplicates")
 	groups, err = confirmDuplicates(ctx, readers, groups)
 	if err != nil {
 		return ExitInterrupt, rep, err
@@ -322,7 +372,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		groups = sampleGroups(groups, opt.Sample)
 	}
 
-	pr.Phase(fmt.Sprintf("plan  %d unique  %d media  %d sidecars", len(groups), rep.Media, rep.Sidecars))
+	phase("plan", fmt.Sprintf("plan  %d unique  %d media  %d sidecars", len(groups), rep.Media, rep.Sidecars))
 	if opt.DryRun {
 		summarizeDry(opt, idx, groups, &rep)
 		fmt.Fprintln(opt.Stdout, summaryText(rep))
@@ -354,7 +404,8 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 	if !fs.APFS && opt.Albums == "clone" {
 		opt.Albums = "copy"
-		fmt.Fprintf(opt.Stdout, "note: %s is not APFS, so album folders are full copies\n", fs.Type)
+		extra := estimate(groups, false, "copy") - estimate(groups, false, "none")
+		fmt.Fprintf(opt.Stdout, "note: %s is not APFS, so album folders are full copies (about %.1f GB more). --albums none skips them.\n", fs.Type, float64(extra)/1e9)
 	}
 
 	release, err := state.Lock(filepath.Join(opt.Results, ".takeout"))
@@ -372,7 +423,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	defer journal.Close()
 	cleanPartial(filepath.Join(opt.Results, ".takeout", "staging"))
 
-	pr.Phase("copy")
+	phase("copy", "copy")
 	placed := 0
 	for i := range groups {
 		if err := ctx.Err(); err != nil {
@@ -427,7 +478,14 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	applyZones(groups, opt.DefaultTZ)
 
 	times := &timeLog{}
-	pr.Phase("tags")
+	toTag := 0
+	for i := range groups {
+		g := &groups[i]
+		if !g.skip && !g.placeholder && g.staged != "" && g.trueType != "webm" && g.trueType != "cr3" {
+			toTag++
+		}
+	}
+	phase("tags", "tags")
 	runners := make([]tagRunner, len(clients))
 	for i, c := range clients {
 		runners[i] = c
@@ -441,7 +499,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		return ExitInterrupt, rep, nil
 	}
 
-	pr.Phase("place")
+	phase("place", "place")
 	pl := newPlacer(opt.Results, journal)
 	pl.times = times
 	for i := range groups {
@@ -454,7 +512,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 			rep.Errors = append(rep.Errors, err.Error())
 		}
 	}
-	pr.Phase("albums")
+	phase("albums", "albums")
 	if opt.Albums != "none" {
 		dirs, renames := albumDirs(groups, rule)
 		rep.AlbumRenames = renames
@@ -488,8 +546,21 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		return ExitReconcile, rep, fmt.Errorf("reconciliation failed: %d fates, %d entries", len(fates), len(idx.Entries))
 	}
 	fillReport(&rep, groups)
-	// readback of written dates
+	timer.next("verify")
 	verifyTags(clients, opt.Results, groups, &rep)
+	timer.next("")
+	rep.Seconds = timer.secs
+	if s := rep.Seconds["tags"]; s > 0 {
+		rep.FilesPerSecond = math.Round(float64(toTag)/s*10) / 10
+	}
+	rep.TagErrorFiles = append(tagErrorFiles(groups), rep.TagErrorFiles...)
+	if len(rep.TagErrorFiles) > maxTagErrorFiles {
+		rep.TagErrorFiles = rep.TagErrorFiles[:maxTagErrorFiles]
+	}
+	rep.Retries = Retries{Rename: media.RenameRetries.Load() - renameStart, Tag: tagRetries.Load() - tagStart}
+	if runtime.GOOS == "windows" && rep.Retries.Rename+rep.Retries.Tag > 20 {
+		fmt.Fprintln(opt.Stdout, defenderHint(opt.Results))
+	}
 	writeReport(opt.Results, rep)
 	fmt.Fprintln(opt.Stdout, summaryText(rep))
 	if rep.TagErrors > 0 {
@@ -1413,6 +1484,7 @@ func runWrite(c tagRunner, args []string, id int, needUpdate bool, sleep func(ti
 			return nil
 		}
 		if attempt < len(writeRetryDelays) && transientWriteError(r.Err) {
+			tagRetries.Add(1)
 			sleep(writeRetryDelays[attempt])
 			continue
 		}
@@ -1897,6 +1969,11 @@ func verifyTags(clients []*exiftool.Client, results string, groups []group, rep 
 		cre, _ := row["CreationDate"].(string)
 		if !strings.Contains(dto+" "+cre, it.day) {
 			rep.TagErrors++
+			if len(rep.TagErrorFiles) < maxTagErrorFiles {
+				rel, _ := filepath.Rel(results, it.path)
+				rep.TagErrorFiles = append(rep.TagErrorFiles, TagErrorFile{Path: filepath.ToSlash(rel),
+					Stderr: fmt.Sprintf("date did not read back: want %s, DateTimeOriginal %q, CreationDate %q", it.day, dto, cre)})
+			}
 			if len(rep.Errors) < 30 {
 				rep.Errors = append(rep.Errors, "readback "+filepath.Base(it.path))
 			}
@@ -1941,6 +2018,31 @@ func summarizeDry(opt Options, idx *zipindex.Index, groups []group, rep *Report)
 	rep.Filesystem = fs.Type
 	fmt.Fprintf(opt.Stdout, "parts %d  missing %v  exports %v\n", len(idx.Zips), idx.Missing, idx.ExportIDs)
 	fmt.Fprintf(opt.Stdout, "filesystem %s  free %d GB  need about %d GB\n", fs.Type, fs.Free/1e9, estimate(groups, fs.APFS, opt.Albums)/1e9)
+}
+
+// tagErrorFiles lists files whose tag write failed, by their place in results.
+func tagErrorFiles(groups []group) []TagErrorFile {
+	var out []TagErrorFile
+	for _, g := range groups {
+		if g.tagErr == "" || len(out) >= maxTagErrorFiles {
+			continue
+		}
+		p := filepath.ToSlash(g.outRel)
+		if p == "" {
+			p = g.members[g.canon].RelFolder + "/" + g.members[g.canon].Name
+		}
+		out = append(out, TagErrorFile{Path: p, Stderr: g.tagErr})
+	}
+	return out
+}
+
+func defenderHint(results string) string {
+	abs, err := filepath.Abs(results)
+	if err != nil {
+		abs = results
+	}
+	return "note: Windows Defender or the search indexer is holding new files. Excluding " + abs +
+		" from scanning makes runs faster. See README.md#antivirus"
 }
 
 func writeReport(results string, rep Report) {
@@ -2163,5 +2265,13 @@ func Status(results string) string {
 		return "no run yet"
 	}
 	n := strings.Count(string(b), "\n")
-	return fmt.Sprintf("journal lines %d", n)
+	line := fmt.Sprintf("journal lines %d", n)
+	if rb, err := os.ReadFile(filepath.Join(results, ".takeout", "report.json")); err == nil {
+		var rep Report
+		if json.Unmarshal(rb, &rep) == nil && rep.TagErrors > 0 {
+			line += fmt.Sprintf("\n%d tag errors, see %s tag_error_files", rep.TagErrors,
+				filepath.Join(results, ".takeout", "report.json"))
+		}
+	}
+	return line
 }

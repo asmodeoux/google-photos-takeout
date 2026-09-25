@@ -31,6 +31,7 @@ try {
     Invoke-Checked $Binary @("status", "--results", $out)
 
     $report = Get-Content (Join-Path $out ".takeout\report.json") -Raw | ConvertFrom-Json
+    Write-Host "seconds: $($report.seconds | ConvertTo-Json -Compress)  files per second: $($report.files_per_second)  retries: $($report.retries | ConvertTo-Json -Compress)"
     if ($report.tag_errors -ne 0) { throw "tag errors: $($report.errors -join '; ')" }
     if ($report.live_pairs -ne 5) { throw "live pairs: $($report.live_pairs)" }
     if ($report.names_rule -ne "portable") { throw "names rule: $($report.names_rule)" }

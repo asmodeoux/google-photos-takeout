@@ -23,6 +23,8 @@ echo "run took $(( $(date +%s) - start ))s"
 "$bin" status --results "$work/results"
 
 report="$work/results/.takeout/report.json"
+sed -n '/"seconds"/,/}/p' "$report"
+grep '"files_per_second"' "$report" || true
 grep -q '"tag_errors": 0' "$report" || { echo "tag errors in $report" >&2; cat "$report" >&2; exit 1; }
 grep -q '"live_pairs": 5' "$report" || { echo "live pairs missing" >&2; exit 1; }
 if [ -n "${SMOKE_RESULTS:-}" ]; then
