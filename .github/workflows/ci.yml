@@ -1,11 +1,21 @@
 name: ci
 
+# Pull requests run through pull_request; push runs only for main, so a push to
+# a pull request's branch does not run everything twice.
 on:
   push:
+    branches: [main]
   pull_request:
+  workflow_dispatch:
   schedule:
     # Weekly: the pinned ExifTool download must still exist and match its hash.
     - cron: "17 5 * * 1"
+
+# A new push to a pull request cancels its run still in progress. Runs on main
+# are never cancelled, so each commit there keeps its downloads.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # The workflow only reads the repository.
 permissions:
