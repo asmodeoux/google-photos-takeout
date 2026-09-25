@@ -268,12 +268,18 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 
 	if opt.UnzipOnly || opt.KeepUnzipped {
-		dest := filepath.Join(filepath.Dir(opt.Archives), "unzipped")
+		dest, err := unzipDest(opt.Archives)
+		if err != nil {
+			return ExitPreflight, rep, err
+		}
 		if err := checkUnzipDest(dest, idx); err != nil {
 			return ExitPreflight, rep, err
 		}
 		phase("unzip", "unzip")
-		if err := unzipAll(ctx, zips, filepath.Join(filepath.Dir(opt.Archives), "unzipped")); err != nil {
+		if err := unzipAll(ctx, zips, dest); err != nil {
+			if ctx.Err() != nil {
+				return ExitInterrupt, rep, err
+			}
 			return ExitPreflight, rep, err
 		}
 		if opt.UnzipOnly {
@@ -2222,58 +2228,124 @@ func importText() string {
 	return "Import results/<year> and results/unknown into Apple Photos, not results/albums. import-photos --library <Photos library> uploads to iCloud when that library is the system one; pass --confirm-icloud to allow that."
 }
 
+// unzipDest is the unzipped/ folder next to the archives folder. A trailing
+// separator or "." must not put it inside the archives.
+func unzipDest(archives string) (string, error) {
+	abs, err := filepath.Abs(archives)
+	if err != nil {
+		return "", err
+	}
+	dest := filepath.Join(filepath.Dir(filepath.Clean(abs)), "unzipped")
+	if rel, err := filepath.Rel(abs, dest); err == nil && !strings.HasPrefix(rel, "..") {
+		return "", &PreflightError{Problem: "the unzip folder would be inside the archives folder", Value: dest,
+			Fix: "pass the archives folder by name, for example --archives archives", Anchor: "paths"}
+	}
+	return dest, nil
+}
+
+// unzipAll extracts every zip into dest/<zip name>/. It never replaces a file:
+// an existing file of the same size is taken as already extracted (resume),
+// and a different one keeps its place while the new file gets " (2)".
 func unzipAll(ctx context.Context, zips []string, dest string) error {
 	for _, z := range zips {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		r, err := zip.OpenReader(z)
-		if err != nil {
-			return err
-		}
 		base := strings.TrimSuffix(filepath.Base(z), ".zip")
 		root := filepath.Join(dest, base)
-		taken := map[string]bool{}
-		for _, f := range r.File {
-			if err := zipindex.CheckPath(f.Name); err != nil {
-				r.Close()
-				return err
-			}
-			if f.Mode()&fs.ModeSymlink != 0 || zipindex.IsSystemFile(f.Name) {
-				continue
-			}
-			if f.FileInfo().IsDir() {
-				_ = os.MkdirAll(filepath.Join(root, unzipRel(f.Name, "", nil)), 0o755)
-				continue
-			}
-			target := filepath.Join(root, unzipRel(f.Name, "file", taken))
-			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-				r.Close()
-				return err
-			}
-			rc, err := f.Open()
-			if err != nil {
-				r.Close()
-				return err
-			}
-			out, err := os.Create(target)
-			if err != nil {
-				rc.Close()
-				r.Close()
-				return err
-			}
-			_, err = io.Copy(out, rc)
-			out.Close()
-			rc.Close()
-			if err != nil {
-				r.Close()
-				return fmt.Errorf("%s: %w. Re-download the zip if this is a CRC error", f.Name, err)
-			}
+		if _, err := os.Stat(filepath.Join(root, ".complete")); err == nil {
+			continue
 		}
-		r.Close()
+		if err := unzipOne(ctx, z, root); err != nil {
+			return err
+		}
 		_ = os.WriteFile(filepath.Join(root, ".complete"), []byte("ok\n"), 0o644)
 	}
 	return nil
+}
+
+func unzipOne(ctx context.Context, z, root string) error {
+	r, err := zip.OpenReader(z)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	taken := map[string]bool{}
+	for _, f := range r.File {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := zipindex.CheckPath(f.Name); err != nil {
+			return err
+		}
+		if f.Mode()&fs.ModeSymlink != 0 || zipindex.IsSystemFile(f.Name) {
+			continue
+		}
+		if f.FileInfo().IsDir() {
+			_ = os.MkdirAll(filepath.Join(root, unzipRel(f.Name, "", nil)), 0o755)
+			continue
+		}
+		rel := unzipRel(f.Name, "file", taken)
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(root, rel)), 0o755); err != nil {
+			return err
+		}
+		if err := unzipFile(f, root, rel); err != nil {
+			return fmt.Errorf("%s: %w. Re-download the zip if this is a CRC error", f.Name, err)
+		}
+	}
+	return nil
+}
+
+func unzipFile(f *zip.File, root, rel string) error {
+	dir, file := filepath.Split(filepath.FromSlash(rel))
+	partial := filepath.Join(root, dir, file+".partial")
+	written := false
+	defer func() {
+		if !written {
+			os.Remove(partial)
+		}
+	}()
+	for n := 1; ; n++ {
+		target := filepath.Join(root, dir, names.WithIndex(file, n))
+		if st, err := os.Stat(target); err == nil {
+			if n == 1 && uint64(st.Size()) == f.UncompressedSize64 {
+				return nil // extracted by an earlier, interrupted run
+			}
+			continue
+		}
+		if !written {
+			if err := extractTo(f, partial); err != nil {
+				return err
+			}
+			written = true
+		}
+		err := media.Rename(partial, target)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			written = false
+		}
+		return err
+	}
+}
+
+func extractTo(f *zip.File, p string) error {
+	out, err := os.Create(p)
+	if err != nil {
+		return err
+	}
+	rc, err := f.Open()
+	if err != nil {
+		out.Close()
+		return err
+	}
+	_, err = io.Copy(out, rc)
+	rc.Close()
+	if cerr := out.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // unzipRel turns a zip entry name into a relative path that every filesystem

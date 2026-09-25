@@ -207,3 +207,65 @@ func TestUnzipSkipsSymlinksAndSystemFiles(t *testing.T) {
 		t.Fatal("nothing unzipped")
 	}
 }
+
+func TestUnzipNeverReplacesFiles(t *testing.T) {
+	dir := t.TempDir()
+	zips, err := testgen.Corpus().Write(filepath.Join(dir, "archives"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "unzipped")
+	if err := unzipAll(context.Background(), zips, dest); err != nil {
+		t.Fatal(err)
+	}
+	first := snapshot(t, dest)
+
+	// Interrupted before .complete was written: the rerun keeps what is there.
+	for _, z := range zips {
+		os.Remove(filepath.Join(dest, strings.TrimSuffix(filepath.Base(z), ".zip"), ".complete"))
+	}
+	var victim string
+	for rel := range first {
+		if strings.HasSuffix(rel, "/lonely.jpg") {
+			victim = filepath.Join(dest, filepath.FromSlash(rel))
+		}
+	}
+	if victim == "" {
+		t.Fatal("lonely.jpg not unzipped")
+	}
+	if err := os.WriteFile(victim, []byte("the user's own edit"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := unzipAll(context.Background(), zips, dest); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(victim); string(b) != "the user's own edit" {
+		t.Fatal("unzip replaced an existing file")
+	}
+	if _, err := os.Stat(strings.TrimSuffix(victim, ".jpg") + " (2).jpg"); err != nil {
+		t.Fatalf("the zip's copy should sit next to it as (2): %v", err)
+	}
+	after := snapshot(t, dest)
+	if len(after) != len(first)+1 {
+		t.Fatalf("files: %d before, %d after (want one more)", len(first), len(after))
+	}
+	for rel := range after {
+		if strings.HasSuffix(rel, ".partial") {
+			t.Errorf("leftover %s", rel)
+		}
+	}
+}
+
+func TestUnzipDestStaysOutsideArchives(t *testing.T) {
+	dir := t.TempDir()
+	arch := filepath.Join(dir, "archives")
+	for _, in := range []string{arch, arch + string(filepath.Separator), arch + string(filepath.Separator) + "."} {
+		got, err := unzipDest(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got != filepath.Join(dir, "unzipped") {
+			t.Errorf("unzipDest(%q) = %s", in, got)
+		}
+	}
+}
