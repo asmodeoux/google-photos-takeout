@@ -46,6 +46,9 @@ type Index struct {
 	// MissingByExport lists missing part numbers for each export ID.
 	MissingByExport map[string][]int
 	PartPrefix      string
+	// FallbackRoot is set when no known "Google Photos" folder name was found
+	// and the export's photo folder was recognized by its contents instead.
+	FallbackRoot string
 }
 
 // ZipInfo describes one archive part.
@@ -79,6 +82,7 @@ var (
 func Open(paths []string) (*Index, error) {
 	idx := &Index{}
 	parts := map[string]map[int]bool{}
+	var others []Entry // entries under a Takeout folder we did not recognize
 	for _, p := range paths {
 		zr, err := zip.OpenReader(p)
 		if err != nil {
@@ -105,6 +109,9 @@ func Open(paths []string) (*Index, error) {
 			}
 			rel, baseName, ok := splitGooglePhotos(name)
 			if !ok {
+				if strings.HasPrefix(name, "Takeout/") && strings.Count(name, "/") >= 2 {
+					others = append(others, Entry{ZipPath: p, EntryName: name, Size: f.UncompressedSize64, CRC32: f.CRC32})
+				}
 				continue
 			}
 			e := Entry{
@@ -121,6 +128,9 @@ func Open(paths []string) (*Index, error) {
 		}
 		zr.Close()
 		idx.Zips = append(idx.Zips, info)
+	}
+	if len(idx.Entries) == 0 && len(others) > 0 {
+		idx.useFallbackRoot(others)
 	}
 	ids := make([]string, 0, len(parts))
 	for id := range parts {
@@ -147,6 +157,65 @@ func Open(paths []string) (*Index, error) {
 		}
 	}
 	return idx, nil
+}
+
+// useFallbackRoot handles an export whose photo folder has a name we do not
+// know, for example in a language not listed in gpNames. It picks the one
+// top folder under Takeout/ that holds both media and JSON sidecars. Year
+// folders there are recognized by a four-digit year before or after a word.
+func (idx *Index) useFallbackRoot(others []Entry) {
+	media, sidecars := map[string]int{}, map[string]int{}
+	for _, e := range others {
+		root := strings.SplitN(e.EntryName, "/", 3)[1]
+		if strings.HasSuffix(strings.ToLower(e.EntryName), ".json") {
+			sidecars[root]++
+		} else {
+			media[root]++
+		}
+	}
+	var roots []string
+	for r := range media {
+		if sidecars[r] > 0 {
+			roots = append(roots, r)
+		}
+	}
+	if len(roots) != 1 {
+		return
+	}
+	root := roots[0]
+	idx.FallbackRoot = root
+	for _, e := range others {
+		parts := strings.Split(e.EntryName, "/")
+		if parts[1] != root || len(parts) < 3 {
+			continue
+		}
+		folder, name := "", parts[len(parts)-1]
+		if len(parts) > 3 {
+			folder = NormFolder(parts[2])
+			if y := genericYear(folder); y != "" {
+				folder = "Photos from " + y
+			}
+		}
+		if name == "" {
+			continue
+		}
+		e.RelFolder = folder
+		e.Name = name
+		e.JSON = strings.HasSuffix(strings.ToLower(name), ".json")
+		idx.Entries = append(idx.Entries, e)
+	}
+}
+
+var genericYearRe = regexp.MustCompile(`^(?:\p{L}[\p{L}' ]*[ _-])?((?:18|19|20)\d{2})(?:[ _-][\p{L}' ]*\p{L})?$`)
+
+// genericYear returns the year of a folder named like "<word> 2019" or
+// "2019 <word>" in any language, or "".
+func genericYear(folder string) string {
+	m := genericYearRe.FindStringSubmatch(folder)
+	if m == nil || !yearNum(m[1]) {
+		return ""
+	}
+	return m[1]
 }
 
 // CheckPath rejects absolute paths and ".." segments (zip slip).

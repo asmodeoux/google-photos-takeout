@@ -97,6 +97,7 @@ type Report struct {
 	BirthTimeErrs  int            `json:"birth_time_errors,omitempty"`
 	BirthTimeList  []string       `json:"birth_time_error_files,omitempty"`
 	ExportIDs      []string       `json:"export_ids,omitempty"`
+	RootFolder     string         `json:"root_folder,omitempty"`
 	NamesRule      string         `json:"names_rule,omitempty"`
 	NamesReason    string         `json:"names_reason,omitempty"`
 	AlbumRenames   []string       `json:"album_renames,omitempty"`
@@ -169,6 +170,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		rep.Errors = append(rep.Errors, "mixed export ids: "+strings.Join(idx.ExportIDs, ", "))
 	}
 	rep.ExportIDs = idx.ExportIDs
+	rep.RootFolder = idx.FallbackRoot
 	if len(idx.MissingByExport) > 0 {
 		var parts []string
 		for _, id := range idx.ExportIDs {

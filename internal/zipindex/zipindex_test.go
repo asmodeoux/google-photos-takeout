@@ -151,3 +151,40 @@ func TestMissingPartsPerExport(t *testing.T) {
 		t.Fatal("complete export reported missing")
 	}
 }
+
+func TestFallbackRootForUnknownLanguage(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "takeout-20240101T000000Z-1-001.zip")
+	f, _ := os.Create(p)
+	zw := zip.NewWriter(f)
+	for _, name := range []string{
+		"Takeout/Fotoj Google/Fotoj de 2019/a.jpg",
+		"Takeout/Fotoj Google/Fotoj de 2019/a.jpg.supplemental-metadata.json",
+		"Takeout/Fotoj Google/Ferioj/b.jpg",
+		"Takeout/Mail/inbox.mbox",
+	} {
+		w, _ := zw.Create(name)
+		w.Write([]byte(name))
+	}
+	zw.Close()
+	f.Close()
+	idx, err := Open([]string{p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idx.FallbackRoot != "Fotoj Google" || len(idx.Entries) != 3 {
+		t.Fatalf("root %q entries %d", idx.FallbackRoot, len(idx.Entries))
+	}
+	folders := map[string]bool{}
+	for _, e := range idx.Entries {
+		folders[e.RelFolder] = true
+	}
+	if !folders["Photos from 2019"] || !folders["Ferioj"] {
+		t.Fatalf("folders %v", folders)
+	}
+	for in, want := range map[string]string{"Fotoj de 2019": "2019", "2019 fotoj": "2019", "Ferioj": "", "Paris2019": "", "Trip 20190": ""} {
+		if got := genericYear(in); got != want {
+			t.Errorf("genericYear(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
