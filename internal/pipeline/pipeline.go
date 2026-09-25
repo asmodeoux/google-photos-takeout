@@ -902,13 +902,17 @@ func asFloat(v any) (float64, bool) {
 func extractGroup(readers map[string]*zipSet, g *group, results string, journal *state.Journal) error {
 	if rec, ok := journal.Get(g.id); ok && rec.SHA != "" && rec.Stage != "" && rec.Stage != "staged" {
 		p := filepath.Join(results, ".takeout", "staging", rec.SHA)
+		outRel := ""
 		if rec.Path != "" {
-			p = filepath.Join(results, filepath.FromSlash(rec.Path))
+			placed := filepath.Join(results, filepath.FromSlash(rec.Path))
+			if _, err := os.Stat(placed); err == nil || rec.Stage != "placing" {
+				p, outRel = placed, filepath.FromSlash(rec.Path)
+			}
 		}
 		if st, err := os.Stat(p); err == nil && st.Size() > 0 {
 			g.staged = p
 			g.sha = rec.SHA
-			g.outRel = filepath.FromSlash(rec.Path)
+			g.outRel = outRel
 			hf, err := os.Open(p)
 			if err == nil {
 				buf := make([]byte, 32)
@@ -1446,7 +1450,8 @@ func tagAll(ctx context.Context, force <-chan struct{}, grace time.Duration, run
 					}
 					repMu.Unlock()
 				default:
-					if rec, ok := journal.Get(g.id); !ok || (rec.Stage != "placed" && rec.Stage != "cloned") {
+					// A file already on its way into the library keeps its path.
+					if rec, ok := journal.Get(g.id); !ok || rec.Stage == "" || rec.Stage == "staged" || rec.Stage == "tagged" {
 						_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "tagged"})
 					}
 				}
@@ -1553,12 +1558,20 @@ type placer struct {
 
 func newPlacer(results string, journal *state.Journal) *placer {
 	p := &placer{results: results, taken: map[string]bool{}, next: map[string]int{}, pairN: map[string]int{}}
+	// Only names that exist are reserved: a journal path whose move or album
+	// link never happened, because of a crash, is free to use again.
+	exists := func(rel string) bool {
+		_, err := os.Lstat(filepath.Join(results, filepath.FromSlash(rel)))
+		return err == nil
+	}
 	for _, rec := range journal.All() {
-		if rec.Path != "" {
+		if rec.Path != "" && exists(rec.Path) {
 			p.taken[names.Key(rec.Path)] = true
 		}
 		for _, a := range rec.Albums {
-			p.taken[names.Key(a)] = true
+			if exists(a) {
+				p.taken[names.Key(a)] = true
+			}
 		}
 	}
 	return p
@@ -1601,12 +1614,19 @@ func (p *placer) take(rel string) {
 
 // moveInto places src at a free name picked by pick, retrying when another file
 // appears at the chosen path. Moves fall back to a copy across volumes.
-func (p *placer) moveInto(src, dir, base, pairKey string) (string, error) {
+// intent, when set, is called with the chosen name before the move, so a crash
+// between the move and the caller's journal write can be recovered.
+func (p *placer) moveInto(src, dir, base, pairKey string, intent func(rel string) error) (string, error) {
 	for {
 		rel := p.pick(dir, base, pairKey)
 		dest := filepath.Join(p.results, rel)
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			return "", err
+		}
+		if intent != nil {
+			if err := intent(rel); err != nil {
+				return "", err
+			}
 		}
 		err := media.Rename(src, dest)
 		if errors.Is(err, fs.ErrExist) {
@@ -1629,7 +1649,9 @@ func (p *placer) moveInto(src, dir, base, pairKey string) (string, error) {
 }
 
 func place(opt Options, g *group, pl *placer, rule names.Rule, journal *state.Journal) error {
-	if rec, ok := journal.Get(g.id); ok && rec.Stage == "placed" || recStage(journal, g.id) == "cloned" {
+	// "placing" means the move may have happened before a crash; the file at
+	// that path can only be this one, because names are picked only when free.
+	if st := recStage(journal, g.id); st == "placed" || st == "placing" || st == "cloned" {
 		if rec, ok := journal.Get(g.id); ok && rec.Path != "" {
 			rel := filepath.FromSlash(rec.Path)
 			if _, err := os.Stat(filepath.Join(opt.Results, rel)); err == nil {
@@ -1655,7 +1677,9 @@ func place(opt Options, g *group, pl *placer, rule names.Rule, journal *state.Jo
 	if g.trueType == "webm" && g.outRel == "" && !ffmpegOK(opt.FFmpeg) {
 		dir = "not-importable"
 	}
-	rel, err := pl.moveInto(g.staged, dir, base, g.pairKey)
+	rel, err := pl.moveInto(g.staged, dir, base, g.pairKey, func(rel string) error {
+		return journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "placing", Path: filepath.ToSlash(rel)})
+	})
 	if err != nil {
 		return err
 	}
@@ -1717,11 +1741,21 @@ func albums(opt Options, groups []group, i int, dirs map[string]string, pl *plac
 	if g.outRel == "" || g.placeholder || strings.HasPrefix(g.outRel, "not-importable") {
 		return nil
 	}
-	if rec, ok := journal.Get(g.id); ok && rec.Stage == "cloned" {
+	rec, _ := journal.Get(g.id)
+	if rec.Stage == "cloned" {
 		return nil
 	}
-	seen := map[string]bool{}
+	// Album links from an earlier, interrupted run are kept. Each link is
+	// journaled before it is made, so a crash never leaves a second copy.
 	var made []string
+	done := map[string]bool{}
+	for _, a := range rec.Albums {
+		if _, err := os.Lstat(filepath.Join(opt.Results, filepath.FromSlash(a))); err == nil {
+			made = append(made, a)
+			done[path.Dir(a)] = true
+		}
+	}
+	seen := map[string]bool{}
 	src := filepath.Join(opt.Results, g.outRel)
 	for _, m := range g.members {
 		if zipindex.Classify(m.RelFolder) != zipindex.ClassAlbum || seen[m.RelFolder] {
@@ -1731,10 +1765,17 @@ func albums(opt Options, groups []group, i int, dirs map[string]string, pl *plac
 		ext := names.OutputExt(g.trueType, m.Name, g.video)
 		base, _ := names.SanitizeWith(names.ReplaceExt(m.Name, ext), rule)
 		dir := filepath.Join("albums", filepath.FromSlash(dirs[m.RelFolder]))
+		if done[filepath.ToSlash(dir)] {
+			continue
+		}
 		for {
 			rel := pl.pick(dir, base, "")
 			dest := filepath.Join(opt.Results, rel)
 			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				return err
+			}
+			intent := append(append([]string{}, made...), filepath.ToSlash(rel))
+			if err := journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "placed", Path: filepath.ToSlash(g.outRel), Albums: intent}); err != nil {
 				return err
 			}
 			err := linkAlbum(opt.Albums, src, dest)

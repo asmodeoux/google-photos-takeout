@@ -49,6 +49,21 @@ func OpenJournal(path string) (*Journal, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A crash in the middle of a write leaves a partial last line. End it, so
+	// the next record starts on a line of its own and is not lost with it.
+	if st, err := f.Stat(); err == nil && st.Size() > 0 {
+		last := make([]byte, 1)
+		if r, err := os.Open(path); err == nil {
+			_, rerr := r.ReadAt(last, st.Size()-1)
+			r.Close()
+			if rerr == nil && last[0] != '\n' {
+				if _, err := f.Write([]byte{'\n'}); err != nil {
+					f.Close()
+					return nil, err
+				}
+			}
+		}
+	}
 	j.f = f
 	return j, nil
 }

@@ -41,7 +41,7 @@ func TestPlacerNeverOverwritesOnResume(t *testing.T) {
 	pl := newPlacer(results, openTestJournal(t, results))
 	src := filepath.Join(results, "staged")
 	write(t, src, "third")
-	rel, err := pl.moveInto(src, "2019", "x.jpg", "")
+	rel, err := pl.moveInto(src, "2019", "x.jpg", "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,14 @@ func TestPlacerSeedsFromJournalIgnoringCase(t *testing.T) {
 	results := t.TempDir()
 	j := openTestJournal(t, results)
 	j.Put(state.Rec{ID: "a", Stage: "cloned", Path: "2019/IMG.jpg", Albums: []string{"albums/Trip/IMG.jpg"}})
+	write(t, filepath.Join(results, "2019", "IMG.jpg"), "a")
+	write(t, filepath.Join(results, "albums", "Trip", "IMG.jpg"), "a")
+	// A journal name whose file was never made (crash before the move) is free.
+	j.Put(state.Rec{ID: "b", Stage: "placing", Path: "2019/gone.jpg"})
 	pl := newPlacer(results, j)
+	if got := pl.pick("2019", "gone.jpg", ""); got != filepath.Join("2019", "gone.jpg") {
+		t.Fatalf("unmade journal name was reserved: %s", got)
+	}
 	if got := pl.pick("2019", "img.JPG", ""); got != filepath.Join("2019", "img (2).JPG") {
 		t.Fatalf("library pick %s", got)
 	}

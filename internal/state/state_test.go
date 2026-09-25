@@ -42,3 +42,29 @@ func TestLedger(t *testing.T) {
 	}
 	_ = os.Remove("")
 }
+
+// A crash mid-write leaves a partial last line; the next record must survive.
+func TestJournalRecordAfterTornLineSurvives(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "state.jsonl")
+	if err := os.WriteFile(p, []byte(`{"id":"a","stage":"placed","path":"2019/a.jpg"}`+"\n"+`{"id":"torn","sta`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	j, err := OpenJournal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := j.Put(Rec{ID: "b", Stage: "placing", Path: "2019/b.jpg"}); err != nil {
+		t.Fatal(err)
+	}
+	j.Close()
+	j, err = OpenJournal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer j.Close()
+	for _, id := range []string{"a", "b"} {
+		if _, ok := j.Get(id); !ok {
+			t.Errorf("record %s lost", id)
+		}
+	}
+}
