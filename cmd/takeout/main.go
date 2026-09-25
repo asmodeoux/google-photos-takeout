@@ -52,6 +52,7 @@ func run(cmd string, args []string) int {
 	exif := fs.String("exiftool", "", "path to exiftool")
 	ff := fs.String("ffmpeg", "", "path to ffmpeg")
 	library := fs.String("library", "", "Photos library to import into")
+	namesRule := fs.String("names", "auto", "auto, apple, or portable: which characters output names may keep")
 	if err := fs.Parse(args); err != nil {
 		return pipeline.ExitPreflight
 	}
@@ -68,7 +69,7 @@ func run(cmd string, args []string) int {
 		Archives: *archives, Results: *results, DefaultTZ: *tz, Sample: *sample,
 		DryRun: *dry, KeepUnzipped: *keep, UnzipOnly: cmd == "unzip",
 		Albums: *albums, IncludeTrash: *trash, ExcludeScreenshots: *shots, Quiet: *quiet, Progress: *progress,
-		Exiftool: *exif, FFmpeg: *ff, Stdout: os.Stdout,
+		Exiftool: *exif, FFmpeg: *ff, Names: *namesRule, Stdout: os.Stdout,
 	}
 	if cmd == "import-photos" {
 		return importPhotos(*library, *results, *confirm)

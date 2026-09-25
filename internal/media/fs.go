@@ -21,11 +21,17 @@ type FS struct {
 	APFS bool
 }
 
-// Clone copies bytes. On APFS it shares disk blocks.
+// Clone copies bytes. On APFS it shares disk blocks. It never replaces dst.
 func Clone(src, dst string) error {
 	if err := cloneFile(src, dst); err == nil {
 		return nil
 	}
+	return copyFile(src, dst)
+}
+
+// Copy writes a full copy of src to a new file dst. It never replaces dst: an
+// existing dst returns an error that matches fs.ErrExist.
+func Copy(src, dst string) error {
 	return copyFile(src, dst)
 }
 
@@ -35,14 +41,17 @@ func copyFile(src, dst string) error {
 		return err
 	}
 	defer in.Close()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		return err
 	}
 	_, err = io.Copy(out, in)
 	cerr := out.Close()
-	if err != nil {
-		return err
+	if err == nil {
+		err = cerr
 	}
-	return cerr
+	if err != nil {
+		_ = os.Remove(dst)
+	}
+	return err
 }

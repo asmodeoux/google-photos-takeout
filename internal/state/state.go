@@ -18,6 +18,8 @@ type Rec struct {
 	Year  string `json:"year,omitempty"`
 	Name  string `json:"name,omitempty"`
 	Error string `json:"error,omitempty"`
+	// Albums lists the album copies made for this file, as slash paths.
+	Albums []string `json:"albums,omitempty"`
 }
 
 // Journal is the append-only resume log.
@@ -56,6 +58,17 @@ func (j *Journal) Get(id string) (Rec, bool) {
 	defer j.mu.Unlock()
 	r, ok := j.recs[id]
 	return r, ok
+}
+
+// All returns the latest record for every id.
+func (j *Journal) All() []Rec {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	out := make([]Rec, 0, len(j.recs))
+	for _, r := range j.recs {
+		out = append(out, r)
+	}
+	return out
 }
 
 func (j *Journal) Put(r Rec) error {

@@ -9,11 +9,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -55,6 +59,7 @@ type Options struct {
 	Exiftool           string
 	FFmpeg             string
 	FailAfter          int
+	Names              string // auto, apple, portable
 	Stdout             io.Writer
 	Now                time.Time
 }
@@ -84,6 +89,9 @@ type Report struct {
 	PlaceholderURL []string       `json:"placeholder_urls,omitempty"`
 	Errors         []string       `json:"errors,omitempty"`
 	Filesystem     string         `json:"filesystem"`
+	NamesRule      string         `json:"names_rule,omitempty"`
+	NamesReason    string         `json:"names_reason,omitempty"`
+	AlbumRenames   []string       `json:"album_renames,omitempty"`
 	Import         string         `json:"import"`
 }
 
@@ -263,6 +271,14 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if fs.Free > 0 && fs.Free < need {
 		return ExitPreflight, rep, fmt.Errorf("need about %d GB free on %s (%s), have %d GB", need/1e9, opt.Results, fs.Type, fs.Free/1e9)
 	}
+	rule, reason, err := names.ChooseRule(opt.Names, fs.Type, runtime.GOOS == "windows")
+	if err != nil {
+		return ExitPreflight, rep, err
+	}
+	rep.NamesRule, rep.NamesReason = rule.String(), reason
+	if !opt.Quiet {
+		fmt.Fprintf(opt.Stdout, "names: %s (%s)\n", rule, reason)
+	}
 	if !fs.APFS && opt.Albums == "clone" {
 		opt.Albums = "copy"
 		fmt.Fprintf(opt.Stdout, "note: %s is not APFS, so album folders are full copies\n", fs.Type)
@@ -382,21 +398,23 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 
 	pr.Phase("place")
-	used := map[string]int{}
+	pl := newPlacer(opt.Results, journal)
 	for i := range groups {
 		g := &groups[i]
 		if g.skip || g.staged == "" {
 			continue
 		}
-		if err := place(opt, g, used, journal); err != nil {
+		if err := place(opt, g, pl, rule, journal); err != nil {
 			g.tagErr = err.Error()
 			rep.Errors = append(rep.Errors, err.Error())
 		}
 	}
 	pr.Phase("albums")
 	if opt.Albums != "none" {
+		dirs, renames := albumDirs(groups, rule)
+		rep.AlbumRenames = renames
 		for i := range groups {
-			if err := albums(opt, groups, i, journal); err != nil {
+			if err := albums(opt, groups, i, dirs, pl, rule, journal); err != nil {
 				rep.Errors = append(rep.Errors, err.Error())
 			}
 		}
@@ -668,12 +686,12 @@ func extractGroup(readers map[string]*zipSet, g *group, results string, journal 
 	if rec, ok := journal.Get(g.id); ok && rec.SHA != "" && rec.Stage != "" && rec.Stage != "staged" {
 		p := filepath.Join(results, ".takeout", "staging", rec.SHA)
 		if rec.Path != "" {
-			p = filepath.Join(results, rec.Path)
+			p = filepath.Join(results, filepath.FromSlash(rec.Path))
 		}
 		if st, err := os.Stat(p); err == nil && st.Size() > 0 {
 			g.staged = p
 			g.sha = rec.SHA
-			g.outRel = rec.Path
+			g.outRel = filepath.FromSlash(rec.Path)
 			hf, err := os.Open(p)
 			if err == nil {
 				buf := make([]byte, 32)
@@ -1140,22 +1158,106 @@ func transientWriteError(stderr string) bool {
 	return false
 }
 
-func place(opt Options, g *group, used map[string]int, journal *state.Journal) error {
+// placer picks output names. A name is free only when no earlier file in this
+// run or in the journal took it and nothing exists at that path, so a file is
+// never overwritten, on resume or after two names sanitize to the same string.
+type placer struct {
+	results string
+	taken   map[string]bool // names.Key of results-relative slash paths
+	next    map[string]int  // last index used per folder + stem
+	pairN   map[string]int  // index chosen for a Live Photo pair
+}
+
+func newPlacer(results string, journal *state.Journal) *placer {
+	p := &placer{results: results, taken: map[string]bool{}, next: map[string]int{}, pairN: map[string]int{}}
+	for _, rec := range journal.All() {
+		if rec.Path != "" {
+			p.taken[names.Key(rec.Path)] = true
+		}
+		for _, a := range rec.Albums {
+			p.taken[names.Key(a)] = true
+		}
+	}
+	return p
+}
+
+func (p *placer) free(rel string) bool {
+	if p.taken[names.Key(filepath.ToSlash(rel))] {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(p.results, rel))
+	return errors.Is(err, fs.ErrNotExist)
+}
+
+// pick returns the first free "base", "base (2)", ... in dir. Both halves of a
+// Live Photo pair get the same number when they can.
+func (p *placer) pick(dir, base, pairKey string) string {
+	if n, ok := p.pairN[pairKey]; ok && pairKey != "" {
+		if rel := filepath.Join(dir, names.WithIndex(base, n)); p.free(rel) {
+			return rel
+		}
+	}
+	stemKey := names.Key(filepath.ToSlash(dir) + "/" + names.Stem(base))
+	for n := p.next[stemKey] + 1; ; n++ {
+		rel := filepath.Join(dir, names.WithIndex(base, n))
+		if p.free(rel) {
+			p.next[stemKey] = n
+			if pairKey != "" {
+				if _, ok := p.pairN[pairKey]; !ok {
+					p.pairN[pairKey] = n
+				}
+			}
+			return rel
+		}
+	}
+}
+
+func (p *placer) take(rel string) {
+	p.taken[names.Key(filepath.ToSlash(rel))] = true
+}
+
+// moveInto places src at a free name picked by pick, retrying when another file
+// appears at the chosen path. Moves fall back to a copy across volumes.
+func (p *placer) moveInto(src, dir, base, pairKey string) (string, error) {
+	for {
+		rel := p.pick(dir, base, pairKey)
+		dest := filepath.Join(p.results, rel)
+		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+			return "", err
+		}
+		err := media.Rename(src, dest)
+		if errors.Is(err, fs.ErrExist) {
+			p.take(rel)
+			continue
+		}
+		if err != nil {
+			if err := media.Copy(src, dest); err != nil {
+				if errors.Is(err, fs.ErrExist) {
+					p.take(rel)
+					continue
+				}
+				return "", err
+			}
+			_ = os.Remove(src)
+		}
+		p.take(rel)
+		return rel, nil
+	}
+}
+
+func place(opt Options, g *group, pl *placer, rule names.Rule, journal *state.Journal) error {
 	if rec, ok := journal.Get(g.id); ok && rec.Stage == "placed" || recStage(journal, g.id) == "cloned" {
 		if rec, ok := journal.Get(g.id); ok && rec.Path != "" {
-			if _, err := os.Stat(filepath.Join(opt.Results, rec.Path)); err == nil {
-				g.outRel = rec.Path
+			rel := filepath.FromSlash(rec.Path)
+			if _, err := os.Stat(filepath.Join(opt.Results, rel)); err == nil {
+				g.outRel = rel
 				return nil
 			}
 		}
 	}
 	orig := g.members[g.canon].Name
 	ext := names.OutputExt(g.trueType, orig, g.video)
-	base := names.ReplaceExt(orig, ext)
-	base, changed := names.Sanitize(base)
-	if changed || !strings.EqualFold(filepath.Ext(orig), ext) && ext != "" {
-		// listed by caller via report fill
-	}
+	base, _ := names.SanitizeWith(names.ReplaceExt(orig, ext), rule)
 	var dir string
 	switch {
 	case g.placeholder:
@@ -1170,43 +1272,17 @@ func place(opt Options, g *group, used map[string]int, journal *state.Journal) e
 	if g.trueType == "webm" && g.outRel == "" && !ffmpegOK(opt.FFmpeg) {
 		dir = "not-importable"
 	}
-	name := base
-	stemKey := names.Key(dir + "/" + names.Stem(base))
-	if g.pairKey != "" {
-		if n, ok := used["pair:"+g.pairKey]; ok {
-			name = names.WithIndex(base, n)
-		} else {
-			used[stemKey]++
-			used["pair:"+g.pairKey] = used[stemKey]
-			name = names.WithIndex(base, used[stemKey])
-		}
-	} else {
-		used[stemKey]++
-		name = names.WithIndex(base, used[stemKey])
-	}
-	rel := filepath.Join(dir, name)
-	dest := filepath.Join(opt.Results, rel)
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	rel, err := pl.moveInto(g.staged, dir, base, g.pairKey)
+	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(dest); err == nil {
-		used[stemKey]++
-		name = names.WithIndex(base, used[stemKey])
-		rel = filepath.Join(dir, name)
-		dest = filepath.Join(opt.Results, rel)
-	}
-	if err := os.Rename(g.staged, dest); err != nil {
-		if err := media.Clone(g.staged, dest); err != nil {
-			return err
-		}
-		_ = os.Remove(g.staged)
-	}
+	dest := filepath.Join(opt.Results, rel)
 	g.outRel = rel
 	g.staged = dest
 	if g.when.OK {
 		_ = media.SetTimes(dest, g.when.Local())
 	}
-	_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "placed", Path: rel, Year: dir, Name: name})
+	_ = journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "placed", Path: filepath.ToSlash(rel), Year: dir, Name: filepath.Base(rel)})
 	return nil
 }
 
@@ -1218,7 +1294,42 @@ func recStage(j *state.Journal, id string) string {
 	return r.Stage
 }
 
-func albums(opt Options, groups []group, i int, journal *state.Journal) error {
+// albumDirs maps each Takeout album folder to its folder under results/albums.
+// Two albums whose names become equal after sanitizing, or differ only in case,
+// get "name", "name (2)", ... in sorted order, so the result is the same on
+// every run and every OS.
+func albumDirs(groups []group, rule names.Rule) (map[string]string, []string) {
+	var folders []string
+	seen := map[string]bool{}
+	for _, g := range groups {
+		for _, m := range g.members {
+			if zipindex.Classify(m.RelFolder) == zipindex.ClassAlbum && !seen[m.RelFolder] {
+				seen[m.RelFolder] = true
+				folders = append(folders, m.RelFolder)
+			}
+		}
+	}
+	sort.Strings(folders)
+	out := map[string]string{}
+	used := map[string]int{}
+	var renames []string
+	for _, f := range folders {
+		clean, _ := names.SanitizeDir(f, rule)
+		key := names.Key(clean)
+		used[key]++
+		dir := clean
+		if used[key] > 1 {
+			dir = clean + " (" + strconv.Itoa(used[key]) + ")"
+		}
+		out[f] = dir
+		if dir != f {
+			renames = append(renames, f+" -> "+dir)
+		}
+	}
+	return out, renames
+}
+
+func albums(opt Options, groups []group, i int, dirs map[string]string, pl *placer, rule names.Rule, journal *state.Journal) error {
 	g := &groups[i]
 	if g.outRel == "" || g.placeholder || strings.HasPrefix(g.outRel, "not-importable") {
 		return nil
@@ -1227,57 +1338,46 @@ func albums(opt Options, groups []group, i int, journal *state.Journal) error {
 		return nil
 	}
 	seen := map[string]bool{}
+	var made []string
+	src := filepath.Join(opt.Results, g.outRel)
 	for _, m := range g.members {
-		if zipindex.Classify(m.RelFolder) != zipindex.ClassAlbum {
-			continue
-		}
-		if seen[m.RelFolder] {
+		if zipindex.Classify(m.RelFolder) != zipindex.ClassAlbum || seen[m.RelFolder] {
 			continue
 		}
 		seen[m.RelFolder] = true
 		ext := names.OutputExt(g.trueType, m.Name, g.video)
-		base, _ := names.Sanitize(names.ReplaceExt(m.Name, ext))
-		dest := filepath.Join(opt.Results, "albums", m.RelFolder, base)
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
-			return err
-		}
-		src := filepath.Join(opt.Results, g.outRel)
-		if err := linkAlbum(opt.Albums, src, dest); err != nil {
-			return err
-		}
-		if g.when.OK {
-			_ = media.SetTimes(dest, g.when.Local())
+		base, _ := names.SanitizeWith(names.ReplaceExt(m.Name, ext), rule)
+		dir := filepath.Join("albums", filepath.FromSlash(dirs[m.RelFolder]))
+		for {
+			rel := pl.pick(dir, base, "")
+			dest := filepath.Join(opt.Results, rel)
+			if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+				return err
+			}
+			err := linkAlbum(opt.Albums, src, dest)
+			pl.take(rel)
+			if errors.Is(err, fs.ErrExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if g.when.OK {
+				_ = media.SetTimes(dest, g.when.Local())
+			}
+			made = append(made, filepath.ToSlash(rel))
+			break
 		}
 	}
-	return journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "cloned", Path: g.outRel})
+	return journal.Put(state.Rec{ID: g.id, SHA: g.sha, Stage: "cloned", Path: filepath.ToSlash(g.outRel), Albums: made})
 }
 
+// linkAlbum puts a clone or copy of src at dst. It never replaces dst.
 func linkAlbum(mode, src, dst string) error {
-	if _, err := os.Stat(dst); err == nil {
-		return nil
-	}
 	if mode == "copy" {
-		return mediaCloneCopy(src, dst)
+		return media.Copy(src, dst)
 	}
 	return media.Clone(src, dst)
-}
-
-func mediaCloneCopy(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	_, err = io.Copy(out, in)
-	cerr := out.Close()
-	if err != nil {
-		return err
-	}
-	return cerr
 }
 
 func transcodeOrKeep(opt Options, g *group) error {
@@ -1573,16 +1673,17 @@ func unzipAll(ctx context.Context, zips []string, dest string) error {
 		}
 		base := strings.TrimSuffix(filepath.Base(z), ".zip")
 		root := filepath.Join(dest, base)
+		taken := map[string]bool{}
 		for _, f := range r.File {
 			if err := zipindex.CheckPath(f.Name); err != nil {
 				r.Close()
 				return err
 			}
-			target := filepath.Join(root, f.Name)
 			if f.FileInfo().IsDir() {
-				_ = os.MkdirAll(target, 0o755)
+				_ = os.MkdirAll(filepath.Join(root, unzipRel(f.Name, "", nil)), 0o755)
 				continue
 			}
+			target := filepath.Join(root, unzipRel(f.Name, "file", taken))
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				r.Close()
 				return err
@@ -1610,6 +1711,29 @@ func unzipAll(ctx context.Context, zips []string, dest string) error {
 		_ = os.WriteFile(filepath.Join(root, ".complete"), []byte("ok\n"), 0o644)
 	}
 	return nil
+}
+
+// unzipRel turns a zip entry name into a relative path that every filesystem
+// accepts. Unzipped files are for viewing, so the portable rule always applies.
+// Files whose names become equal in one folder get " (2)", " (3)", ...
+func unzipRel(name, kind string, taken map[string]bool) string {
+	parts := strings.Split(strings.TrimSuffix(name, "/"), "/")
+	for i, p := range parts {
+		parts[i], _ = names.SanitizeWith(p, names.Portable)
+	}
+	rel := strings.Join(parts, "/")
+	if kind == "file" && taken != nil {
+		dir, file := path.Split(rel)
+		for n := 1; ; n++ {
+			cand := dir + names.WithIndex(file, n)
+			if !taken[names.Key(cand)] {
+				rel = cand
+				break
+			}
+		}
+		taken[names.Key(rel)] = true
+	}
+	return filepath.FromSlash(rel)
 }
 
 // Verify checks that every journal path still exists and the report has no tag errors.
@@ -1640,7 +1764,7 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 		if json.Unmarshal([]byte(line), &rec) != nil || rec.Path == "" {
 			continue
 		}
-		if _, err := os.Stat(filepath.Join(opt.Results, rec.Path)); err != nil {
+		if _, err := os.Stat(filepath.Join(opt.Results, filepath.FromSlash(rec.Path))); err != nil {
 			missing++
 		}
 	}
