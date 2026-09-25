@@ -50,22 +50,31 @@ func TestLeftoverLockFilesDoNotBlock(t *testing.T) {
 func TestConcurrentLockHasOneWinner(t *testing.T) {
 	for round := 0; round < 20; round++ {
 		dir := t.TempDir()
-		var wg sync.WaitGroup
+		var wg, tried sync.WaitGroup
 		var winners atomic.Int32
-		start := make(chan struct{})
+		start, done := make(chan struct{}), make(chan struct{})
 		for i := 0; i < 8; i++ {
 			wg.Add(1)
+			tried.Add(1)
 			go func() {
 				defer wg.Done()
 				<-start
-				if _, err := Lock(dir); err == nil {
+				release, err := Lock(dir)
+				tried.Done()
+				if err == nil {
 					winners.Add(1)
+					// Released after every contender has tried, so none can
+					// take it in between; Windows cannot delete an open lock.
+					<-done
+					release()
 				} else if !errors.Is(err, ErrLocked) {
 					t.Error(err)
 				}
 			}()
 		}
 		close(start)
+		tried.Wait()
+		close(done)
 		wg.Wait()
 		if n := winners.Load(); n != 1 {
 			t.Fatalf("round %d: %d runs got the lock", round, n)
