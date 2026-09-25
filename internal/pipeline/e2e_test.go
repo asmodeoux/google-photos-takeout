@@ -14,16 +14,12 @@ import (
 )
 
 func TestE2EAndResume(t *testing.T) {
-	if _, err := exec.LookPath("exiftool"); err != nil {
-		t.Skip("exiftool not installed")
-	}
+	requireTools(t, "exiftool")
 	dir := t.TempDir()
 	arch := filepath.Join(dir, "archives")
 	out := filepath.Join(dir, "results")
 	os.MkdirAll(arch, 0o755)
-	jpeg := []byte{0xff, 0xd8, 0xff, 0xd9}
-	// a slightly larger jpeg so exiftool accepts it
-	jpeg = mustJPEG(t)
+	jpeg := mustJPEG(t)
 	writeZip(t, filepath.Join(arch, "takeout-20200101T000000Z-1-001.zip"), map[string][]byte{
 		"Takeout/Google Photos/Trip/photo.jpg":             jpeg,
 		"Takeout/Google Photos/Trip/still.HEIC":            jpeg,
@@ -49,10 +45,18 @@ func TestE2EAndResume(t *testing.T) {
 	if code != ExitOK {
 		t.Fatalf("run code %d err %v errors %v", code, err, rep.Errors)
 	}
-	// second run is a no-op and must not invent a second copy
+	// A second run is a no-op: same exit, and not one file added or changed.
+	before := snapshot(t, out)
 	code2, _, err := Run(ctx, Options{Archives: arch, Results: out, Albums: "clone", Progress: "plain", Quiet: true, Stdout: &bytes.Buffer{}})
-	if err != nil && code2 == ExitReconcile {
-		t.Fatal(err)
+	if code2 != ExitOK {
+		t.Fatalf("rerun exit %d: %v", code2, err)
+	}
+	after := snapshot(t, out)
+	sameFiles(t, before, after)
+	for k, v := range before {
+		if after[k] != v {
+			t.Errorf("rerun changed %s", k)
+		}
 	}
 	matches, _ := filepath.Glob(filepath.Join(out, "2016", "*"))
 	dup := 0
@@ -64,9 +68,8 @@ func TestE2EAndResume(t *testing.T) {
 	if dup > 0 {
 		t.Fatalf("rerun created duplicates: %v", matches)
 	}
-	vcode, _, verr := Verify(ctx, Options{Results: out})
-	if verr != nil && vcode == ExitReconcile {
-		t.Fatal(verr)
+	if vcode, _, verr := Verify(ctx, Options{Results: out}); vcode != ExitOK {
+		t.Fatalf("verify exit %d: %v", vcode, verr)
 	}
 	bad, err := yearMismatchesForTest(t, out)
 	if err != nil {
@@ -75,7 +78,6 @@ func TestE2EAndResume(t *testing.T) {
 	if len(bad) > 0 {
 		t.Fatalf("year folder does not match the file date:\n%s", strings.Join(bad, "\n"))
 	}
-	_ = json.Marshal
 }
 
 func writeZip(t *testing.T, path string, files map[string][]byte) {

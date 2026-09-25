@@ -43,5 +43,5 @@ func yearMismatchesForTest(t *testing.T, root string) ([]string, error) {
 		t.Fatal(err)
 	}
 	defer closeClients(clients)
-	return YearMismatches(clients, root)
+	return YearMismatches(clients, root, nil)
 }

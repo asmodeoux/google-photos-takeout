@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -161,5 +162,91 @@ func TestArchivesFolderWithBracketsAndUpperCaseZip(t *testing.T) {
 	code, rep, err := Run(context.Background(), testOptions(odd, results))
 	if code != ExitOK || rep.Library != 1 {
 		t.Fatalf("exit %d library %d: %v", code, rep.Library, err)
+	}
+}
+
+// verify is the success check users and CI rely on; each way a library can be
+// wrong must give its own exit code.
+func TestVerifyFailurePaths(t *testing.T) {
+	requireTools(t, "exiftool")
+	cases := []struct {
+		name   string
+		break_ func(t *testing.T, results string)
+		want   int
+	}{
+		{"intact", func(t *testing.T, results string) {}, ExitOK},
+		{"library file deleted", func(t *testing.T, results string) {
+			os.Remove(filepath.Join(results, "2019", "a.jpg"))
+		}, ExitReconcile},
+		{"photo in the wrong year folder", func(t *testing.T, results string) {
+			os.MkdirAll(filepath.Join(results, "2018"), 0o755)
+			b, _ := os.ReadFile(filepath.Join(results, "2019", "a.jpg"))
+			os.WriteFile(filepath.Join(results, "2018", "stray.jpg"), b, 0o644)
+		}, ExitReconcile},
+		{"tag errors in the report", func(t *testing.T, results string) {
+			editReport(t, results, func(m map[string]any) { m["tag_errors"] = 1 })
+		}, ExitTagErrors},
+		{"failed files in the report", func(t *testing.T, results string) {
+			editReport(t, results, func(m map[string]any) { m["failed"] = 1 })
+		}, ExitReconcile},
+		{"no report", func(t *testing.T, results string) {
+			os.Remove(filepath.Join(results, ".takeout", "report.json"))
+		}, ExitPreflight},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			arch := writeTakeout(t, dir, map[string][]byte{"a.jpg": testgen.JPEG(1), "b.jpg": testgen.JPEG(2)})
+			results := filepath.Join(dir, "results")
+			if code, _, err := Run(context.Background(), testOptions(arch, results)); code != ExitOK {
+				t.Fatalf("run exit %d: %v", code, err)
+			}
+			c.break_(t, results)
+			if code, _, err := Verify(context.Background(), Options{Results: results}); code != c.want {
+				t.Fatalf("verify exit %d (%v), want %d", code, err, c.want)
+			}
+		})
+	}
+}
+
+func editReport(t *testing.T, results string, edit func(map[string]any)) {
+	t.Helper()
+	p := filepath.Join(results, ".takeout", "report.json")
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	edit(m)
+	b, _ = json.Marshal(m)
+	if err := os.WriteFile(p, b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A file ExifTool cannot write is placed, counted once, listed with its
+// message, and makes both run and verify exit 4.
+func TestTagErrorExitsFourAndIsListed(t *testing.T) {
+	requireTools(t, "exiftool")
+	dir := t.TempDir()
+	broken := []byte("\xff\xd8\xff\xe0\x00\x10JFIF\x00garbage-bytes-here")
+	arch := writeTakeout(t, dir, map[string][]byte{"good.jpg": testgen.JPEG(1), "broken.jpg": broken})
+	results := filepath.Join(dir, "results")
+	code, rep, err := Run(context.Background(), testOptions(arch, results))
+	if code != ExitTagErrors {
+		t.Fatalf("run exit %d (%v), want %d; errors %v", code, err, ExitTagErrors, rep.Errors)
+	}
+	if rep.TagErrors != 1 || len(rep.TagErrorFiles) != 1 || rep.TagErrorFiles[0].Path != "2019/broken.jpg" ||
+		!strings.Contains(rep.TagErrorFiles[0].Stderr, "Corrupted") {
+		t.Fatalf("tag errors %d, files %+v", rep.TagErrors, rep.TagErrorFiles)
+	}
+	if rep.Library != 2 || rep.Failed != 0 {
+		t.Fatalf("library %d failed %d", rep.Library, rep.Failed)
+	}
+	if vcode, _, verr := Verify(context.Background(), Options{Results: results}); vcode != ExitTagErrors {
+		t.Fatalf("verify exit %d (%v), want %d", vcode, verr, ExitTagErrors)
 	}
 }

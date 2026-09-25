@@ -14,7 +14,8 @@ import (
 // YearMismatches lists files under a four-digit year folder whose embedded
 // capture date is a different year. A file in results/2018 must say 2018.
 // Files takeout cannot write tags into, such as CR3 and AVI, are skipped.
-func YearMismatches(clients []*exiftool.Client, root string) ([]string, error) {
+// skip lists results-relative slash paths to leave out.
+func YearMismatches(clients []*exiftool.Client, root string, skip map[string]bool) ([]string, error) {
 	var files []string
 	years := map[string]string{}
 	entries, err := os.ReadDir(root)
@@ -27,6 +28,9 @@ func YearMismatches(clients []*exiftool.Client, root string) ([]string, error) {
 		}
 		err := filepath.WalkDir(filepath.Join(root, e.Name()), func(p string, d os.DirEntry, err error) error {
 			if err != nil || d.IsDir() || zipindex.IsSystemName(d.Name()) || !canTag(kindFromExt(d.Name())) {
+				return nil
+			}
+			if rel, err := filepath.Rel(root, p); err == nil && skip[filepath.ToSlash(rel)] {
 				return nil
 			}
 			abs, err := filepath.Abs(p)

@@ -2170,7 +2170,9 @@ func verifyTags(clients []*exiftool.Client, results string, groups []group, rep 
 	var items []item
 	for i := range groups {
 		g := &groups[i]
-		if g.outRel == "" || !g.when.OK || g.placeholder || g.trueType == "gif" || !canTag(g.trueType) {
+		// A file whose write failed is already a tag error; reading it back
+		// would count it twice.
+		if g.outRel == "" || !g.when.OK || g.placeholder || g.tagErr != "" || g.trueType == "gif" || !canTag(g.trueType) {
 			continue
 		}
 		if g.when.Source == dates.SrcEmbedded {
@@ -2531,7 +2533,13 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 		return ExitPreflight, rep, err
 	}
 	defer closeClients(clients)
-	bad, err := YearMismatches(clients, opt.Results)
+	// Files with tag errors are known to lack their date; they are exit 4, not
+	// a wrong year.
+	known := map[string]bool{}
+	for _, f := range rep.TagErrorFiles {
+		known[filepath.ToSlash(f.Path)] = true
+	}
+	bad, err := YearMismatches(clients, opt.Results, known)
 	if err != nil {
 		return ExitReconcile, rep, err
 	}
