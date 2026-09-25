@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -54,5 +56,32 @@ func TestPreflightErrorsHaveProblemFixAndSee(t *testing.T) {
 	}
 	if checkRoot("results", "D:\\Фото results") != nil {
 		t.Error("non-ASCII folder rejected")
+	}
+}
+
+// Every "See: README.md#x" line must land on an <a id="x"> in the README.
+func TestReadmeHasEveryAnchor(t *testing.T) {
+	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	anchors := map[string]bool{"antivirus": true}
+	for _, goos := range []string{"windows", "darwin", "linux"} {
+		for _, err := range []error{
+			errNoZips("a", "x", goos), errMissingParts("p"), errExiftool(errors.New("e")), errExiftoolOld("1", goos),
+			errDiskSpace(1, 0, "r", "ntfs", goos), errFAT(1, "r", "fat32"), errNames(errors.New("n")),
+			errLocked(state.ErrLocked), checkRoot("results", "a\nb"),
+		} {
+			var pe *PreflightError
+			if errors.As(err, &pe) {
+				anchors[pe.Anchor] = true
+			}
+		}
+	}
+	anchors["verify"] = true
+	for a := range anchors {
+		if !strings.Contains(string(readme), `<a id="`+a+`"></a>`) {
+			t.Errorf("README.md has no anchor %q", a)
+		}
 	}
 }
