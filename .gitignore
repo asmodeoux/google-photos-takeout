@@ -29,6 +29,7 @@ unzipped/*
 
 .DS_Store
 /takeout
+/takeout.exe
 *.partial
 *_original
 *_exiftool_tmp

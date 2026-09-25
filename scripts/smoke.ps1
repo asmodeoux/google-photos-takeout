@@ -13,6 +13,11 @@ function Invoke-Checked {
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("takeout-smoke-" + [guid]::NewGuid())
 New-Item -ItemType Directory -Path $work | Out-Null
 try {
+    # The launcher must work in a fresh Windows PowerShell with the default
+    # execution policy, where running .ps1 files directly is blocked.
+    $launcher = (Resolve-Path ".\takeout.cmd").Path
+    Invoke-Checked "powershell" @("-NoProfile", "-Command", "& '$launcher' version; exit `$LASTEXITCODE")
+
     if ($Binary -eq "") {
         $Binary = Join-Path $work "takeout.exe"
         Invoke-Checked "go" @("build", "-o", $Binary, "./cmd/takeout")
