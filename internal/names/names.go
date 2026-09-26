@@ -226,10 +226,11 @@ func OutputExt(trueType, original string, liveVideo bool) string {
 
 // ReplaceExt keeps the stem and sets ext, which includes the dot.
 // Dots that are not a known media extension stay in the stem, so
-// "18.12.12 - 8" becomes "18.12.12 - 8.png".
+// "18.12.12 - 8" becomes "18.12.12 - 8.png", and a name that already has
+// ext keeps it once: "notes.txt" stays "notes.txt".
 func ReplaceExt(name, ext string) string {
 	e := strings.ToLower(path.Ext(name))
-	if knownExt(e) {
+	if knownExt(e) || e == strings.ToLower(ext) {
 		name = strings.TrimSuffix(name, path.Ext(name))
 	}
 	return name + ext

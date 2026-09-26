@@ -78,11 +78,14 @@ type Options struct {
 
 // Report is takeout-report.json.
 type Report struct {
-	SchemaVersion  int            `json:"schema_version"`
-	Media          int            `json:"media"`
-	Sidecars       int            `json:"sidecars"`
-	Library        int            `json:"library"`
-	Unknown        int            `json:"unknown"`
+	SchemaVersion int `json:"schema_version"`
+	Media         int `json:"media"`
+	Sidecars      int `json:"sidecars"`
+	Library       int `json:"library"`
+	Unknown       int `json:"unknown"`
+	// NotImportable counts documents and unconvertible videos, which go to
+	// not-importable/ and are in neither library nor unknown.
+	NotImportable  int            `json:"not_importable"`
 	Placeholders   int            `json:"placeholders"`
 	LivePairs      int            `json:"live_pairs"`
 	IDCopied       int            `json:"identifier_copied"`
@@ -132,6 +135,9 @@ type Report struct {
 	Seconds        map[string]float64 `json:"seconds,omitempty"`
 	FilesPerSecond float64            `json:"files_per_second,omitempty"`
 	Import         string             `json:"import"`
+	// LegacyNonMedia lists non-media files an earlier version placed in the
+	// library folders; a rerun leaves them where they are.
+	LegacyNonMedia []string `json:"-"`
 }
 
 // TagErrorFile is one file whose tags could not be written or read back.
@@ -245,7 +251,7 @@ func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, 
 	if opt.Now.IsZero() {
 		opt.Now = time.Now()
 	}
-	rep := Report{SchemaVersion: 1, Years: map[string]int{}, Sources: map[string]int{}, TZ: map[string]int{}, Formats: map[string]int{}, Import: importText()}
+	rep := Report{SchemaVersion: 2, Years: map[string]int{}, Sources: map[string]int{}, TZ: map[string]int{}, Formats: map[string]int{}, Import: importText()}
 	if opt.Launcher == "" {
 		opt.Launcher = DefaultLauncher(runtime.GOOS)
 	}
@@ -1899,7 +1905,7 @@ func place(opt Options, g *group, pl *placer, rule names.Rule, journal *state.Jo
 	switch {
 	case g.placeholder:
 		dir = "placeholders"
-	case g.trueType == "webm" && strings.HasPrefix(g.outRel, "not-importable"):
+	case notImportable(g):
 		dir = "not-importable"
 	case !g.when.OK:
 		dir = "unknown"
@@ -2007,7 +2013,7 @@ func albumDirs(groups []group, rule names.Rule) (map[string]string, []string) {
 
 func albums(opt Options, groups []group, i int, dirs map[string]string, pl *placer, rule names.Rule, journal *state.Journal) error {
 	g := &groups[i]
-	if g.outRel == "" || g.placeholder || g.failErr != "" || strings.HasPrefix(g.outRel, "not-importable") {
+	if g.outRel == "" || g.placeholder || g.failErr != "" || notImportable(g) {
 		return nil
 	}
 	rec, _ := journal.Get(g.id)
@@ -2236,7 +2242,7 @@ func ledger(entries []zipindex.Entry, groups []group, skipped, screenshots []zip
 			fate = "placeholder"
 		case g.skip:
 			fate = "excluded-trash"
-		case strings.HasPrefix(g.outRel, "not-importable"):
+		case notImportable(&g):
 			fate = "not-importable"
 		}
 		for _, m := range g.members {
@@ -2249,7 +2255,7 @@ func ledger(entries []zipindex.Entry, groups []group, skipped, screenshots []zip
 				fateOf[key] = "excluded-trash"
 				continue
 			}
-			if zipindex.Classify(m.RelFolder) == zipindex.ClassAlbum && !g.placeholder {
+			if zipindex.Classify(m.RelFolder) == zipindex.ClassAlbum && !g.placeholder && fate != "not-importable" {
 				fateOf[key] = "album-clone"
 				continue
 			}
@@ -2271,6 +2277,32 @@ func ledger(entries []zipindex.Entry, groups []group, skipped, screenshots []zip
 		out = append(out, state.Fate{Zip: e.ZipPath, Entry: e.EntryName, Fate: f})
 	}
 	return out
+}
+
+// nonMedia lists the extensions of files Apple Photos cannot import that
+// turn up in Google Photos folders: documents, archives and app data. Any
+// other unrecognized file stays in the library, since Photos may read it.
+var nonMedia = map[string]bool{
+	".txt": true, ".pdf": true, ".html": true, ".htm": true, ".md": true, ".rtf": true,
+	".doc": true, ".docx": true, ".odt": true, ".pages": true,
+	".xls": true, ".xlsx": true, ".csv": true, ".numbers": true,
+	".ppt": true, ".pptx": true, ".key": true,
+	".zip": true, ".rar": true, ".7z": true,
+	".eml": true, ".log": true, ".xml": true, ".ini": true, ".db": true,
+}
+
+// notImportable says whether a group belongs in not-importable/: a document
+// whose bytes are not media, or a WebM that could not be converted. It is
+// decided by kind, not folder, so a document an earlier version placed in a
+// year folder still counts here.
+func notImportable(g *group) bool {
+	if strings.HasPrefix(g.outRel, "not-importable") {
+		return true
+	}
+	if len(g.members) == 0 || (g.trueType != "" && g.trueType != "unknown") {
+		return false
+	}
+	return nonMedia[strings.ToLower(filepath.Ext(g.members[g.canon].Name))]
 }
 
 func fillReport(rep *Report, groups []group) {
@@ -2306,7 +2338,14 @@ func fillReport(rep *Report, groups []group) {
 		if g.when.HasGPS {
 			rep.WithGPS++
 		}
-		if !g.when.OK || strings.HasPrefix(g.outRel, "not-importable") {
+		if notImportable(&g) {
+			rep.NotImportable++
+			if g.outRel != "" && !strings.HasPrefix(g.outRel, "not-importable") && len(rep.LegacyNonMedia) < maxTagErrorFiles {
+				rep.LegacyNonMedia = append(rep.LegacyNonMedia, filepath.ToSlash(g.outRel))
+			}
+			continue
+		}
+		if !g.when.OK {
 			rep.Unknown++
 			continue
 		}
@@ -2454,6 +2493,9 @@ func summaryText(rep Report) string {
 	fmt.Fprintf(&b, "  unique files      %d\n", rep.Unique)
 	fmt.Fprintf(&b, "  dated             %d\n", rep.Library)
 	fmt.Fprintf(&b, "  unknown date      %d\n", rep.Unknown)
+	if rep.NotImportable > 0 {
+		fmt.Fprintf(&b, "  not importable    %d\n", rep.NotImportable)
+	}
 	fmt.Fprintf(&b, "  with GPS          %d\n", rep.WithGPS)
 	without := rep.Library + rep.Unknown - rep.WithGPS
 	if without < 0 {
@@ -2490,6 +2532,13 @@ func summaryText(rep Report) string {
 		for _, e := range rep.Errors[:n] {
 			fmt.Fprintf(&b, "  %s\n", e)
 		}
+	}
+	if len(rep.LegacyNonMedia) > 0 {
+		b.WriteString("Non-media files an earlier version put in the library\n")
+		for _, p := range rep.LegacyNonMedia {
+			fmt.Fprintf(&b, "  %s\n", p)
+		}
+		b.WriteString("  Move them out before importing, or start a fresh results folder.\n")
 	}
 	fmt.Fprintf(&b, "\n%s\n", rep.Import)
 	return b.String()
