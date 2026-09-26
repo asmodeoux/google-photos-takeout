@@ -3,6 +3,7 @@ package exiftool
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -81,6 +82,7 @@ var ErrKilled = errors.New("exiftool was stopped")
 type BrokenError struct {
 	Path     string // the ExifTool that failed
 	ProbeErr error  // set when a probe failed or a process could not start
+	Restart  bool   // set when a process to replace a failed one could not start
 	Window   bool   // set when too many recent commands failed
 	Crashes  int    // failures in the window that were crashes
 	Timeouts int    // failures in the window that were timeouts
@@ -89,6 +91,9 @@ type BrokenError struct {
 func (e *BrokenError) Error() string {
 	if e.Window {
 		return fmt.Sprintf("exiftool failed on %d of the last commands (%d crashes, %d timeouts)", e.Crashes+e.Timeouts, e.Crashes, e.Timeouts)
+	}
+	if e.Restart {
+		return "exiftool could not be started again after it failed: " + e.ProbeErr.Error()
 	}
 	return "exiftool failed a test write: " + e.ProbeErr.Error()
 }
@@ -153,6 +158,9 @@ func (p *Pool) Restarts() int { return int(p.restarts.Load()) }
 // timeout is the limit for a command touching size bytes of files.
 func (p *Pool) timeout(size int64) time.Duration {
 	t := p.o.CommandTimeout
+	if size <= 0 {
+		return t
+	}
 	if byThroughput := time.Duration(size/p.o.MinThroughput+1) * time.Second; byThroughput > t {
 		t = byThroughput
 	}
@@ -261,21 +269,22 @@ func (p *Pool) replace(c *Client) {
 	}
 	n, err := Start(p.bin)
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if err != nil {
-		p.breakLocked(&BrokenError{Path: p.bin, ProbeErr: err})
+		p.breakLocked(&BrokenError{Path: p.bin, ProbeErr: err, Restart: true})
+		p.mu.Unlock()
 		return
 	}
 	if p.killed || p.broken != nil {
-		go n.Kill()
+		p.mu.Unlock()
+		n.Kill()
 		return
 	}
 	p.restarts.Add(1)
 	p.all[n] = true
 	p.free = append(p.free, n)
 	p.cond.Broadcast()
-	pid := n.Pid()
-	go p.emit(Event{Kind: "restart", Pid: pid})
+	p.mu.Unlock()
+	p.emit(Event{Kind: "restart", Pid: n.Pid()})
 }
 
 // settle records how a lineage ended and runs a probe or stops the pool.
@@ -495,10 +504,16 @@ func (p *Pool) readBatch(batch, tags []string, numeric bool) ([]map[string]any, 
 	if err != nil {
 		return nil, nil, err
 	}
-	r, err := p.try(args, 0)
+	// ExifTool reads only metadata, but antivirus may scan each whole file
+	// as it opens, so big videos get more time here too.
+	var size int64
+	for _, path := range batch {
+		size += fileSize(path)
+	}
+	r, err := p.try(args, size)
 	var pe *ProcessError
 	if !isStop(err) && errors.As(err, &pe) && !pe.TimedOut {
-		r, err = p.try(args, 0)
+		r, err = p.try(args, size)
 	}
 	if err == nil {
 		p.settle(outcome{})
@@ -516,7 +531,7 @@ func (p *Pool) readBatch(batch, tags []string, numeric bool) ([]map[string]any, 
 	anyOK, anyTimeout := false, pe.TimedOut
 	for _, path := range batch {
 		one, _ := readArgs([]string{path}, tags, numeric)
-		r, err := p.try(one, 0)
+		r, err := p.try(one, fileSize(path))
 		switch {
 		case err == nil:
 			anyOK = true
@@ -539,6 +554,13 @@ func (p *Pool) readBatch(batch, tags []string, numeric bool) ([]map[string]any, 
 // isStop reports the errors that end every call: Kill and a broken pool.
 func isStop(err error) bool {
 	return errors.Is(err, ErrKilled) || errors.Is(err, ErrPoolBroken)
+}
+
+func fileSize(path string) int64 {
+	if st, err := os.Stat(path); err == nil {
+		return st.Size()
+	}
+	return 0
 }
 
 func failedAll(paths []string, why string) map[string]string {

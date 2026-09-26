@@ -23,7 +23,21 @@ func KillTree(cmd *exec.Cmd, started time.Time) {
 	}
 	kids := descendants(uint32(cmd.Process.Pid), started)
 	_ = cmd.Process.Kill()
-	for _, pid := range kids {
+	terminate(kids)
+}
+
+// KillOrphans stops what cmd started after cmd itself has exited, such as a
+// perl.exe left holding the pipes by a crashed exiftool.exe. Call it right
+// after Wait: the id can be reused later.
+func KillOrphans(cmd *exec.Cmd, started time.Time) {
+	if cmd == nil || cmd.Process == nil {
+		return
+	}
+	terminate(descendants(uint32(cmd.Process.Pid), started))
+}
+
+func terminate(pids []uint32) {
+	for _, pid := range pids {
 		if h, err := windows.OpenProcess(windows.PROCESS_TERMINATE, false, pid); err == nil {
 			_ = windows.TerminateProcess(h, 1)
 			windows.CloseHandle(h)

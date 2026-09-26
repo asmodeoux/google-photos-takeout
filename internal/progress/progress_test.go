@@ -98,8 +98,13 @@ func TestStateHeartbeat(t *testing.T) {
 	r.SetStateFile(path)
 	r.Phase("tags")
 	first, _ := ReadState(path)
-	time.Sleep(300 * time.Millisecond)
-	later, _ := ReadState(path)
+	var later State
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if st, ok := ReadState(path); ok && st.UpdatedAt.After(first.UpdatedAt) {
+			later = st
+			break
+		}
+	}
 	r.Finish(true)
 	if !later.UpdatedAt.After(first.UpdatedAt) {
 		t.Fatalf("not refreshed: %v then %v", first.UpdatedAt, later.UpdatedAt)

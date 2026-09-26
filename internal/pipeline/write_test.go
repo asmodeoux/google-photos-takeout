@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -57,5 +59,22 @@ func TestRunWriteUnchangedIsSuccess(t *testing.T) {
 	r := &scriptedRunner{replies: []exiftool.Reply{{Out: "    1 image files unchanged\n"}}}
 	if err := runWrite(r, []string{"x"}, 1, true, func(time.Duration) {}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A write whose ExifTool was killed mid-write leaves a temporary copy, and
+// ExifTool refuses to write again while it exists. The retry removes it.
+func TestRetryAfterCrashRemovesTemporaryCopy(t *testing.T) {
+	staged := filepath.Join(t.TempDir(), "a.jpg")
+	tmp := staged + "_exiftool_tmp"
+	if err := os.WriteFile(tmp, []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &scriptedRunner{replies: []exiftool.Reply{{Err: "Error: Temporary file already exists: " + tmp}, ok}}
+	if err := runWrite(r, []string{"x"}, 1, true, retryWait(staged)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("temporary copy still there: %v", err)
 	}
 }

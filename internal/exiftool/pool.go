@@ -34,13 +34,16 @@ type Client struct {
 	exited  chan struct{}
 	pipes   []*os.File // parent ends of stdout and stderr, closed when the client is done
 	closed  sync.Once
-	state   atomic.Int32
+	state   atomic.Int64 // command number << 2 | cmdIdle, cmdRunning or cmdTimedOut
+	seq     int64        // command number, under mu
 }
 
 // Command states. A timeout and the command's own completion race to leave
 // cmdRunning; whichever wins decides the outcome and the other does nothing.
+// The state carries the command number too, so a timer that fires late for
+// one command can never stop the next one on the same process.
 const (
-	cmdIdle int32 = iota
+	cmdIdle int64 = iota
 	cmdRunning
 	cmdTimedOut
 )
@@ -115,7 +118,7 @@ func Start(bin string) (*Client, error) {
 	c.exited = make(chan struct{})
 	go func() {
 		_ = cmd.Wait()
-		proc.KillTree(cmd, started)
+		proc.KillOrphans(cmd, started)
 		close(c.exited)
 	}()
 	return c, nil
@@ -247,17 +250,19 @@ func (c *Client) run(args []string, id int, timeout time.Duration) (Reply, error
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.state.Store(cmdRunning)
+	c.seq++
+	running, idle, timedOut := c.seq<<2|cmdRunning, c.seq<<2|cmdIdle, c.seq<<2|cmdTimedOut
+	c.state.Store(running)
 	if timeout > 0 {
 		t := time.AfterFunc(timeout, func() {
-			if c.state.CompareAndSwap(cmdRunning, cmdTimedOut) {
+			if c.state.CompareAndSwap(running, timedOut) {
 				c.killTree()
 			}
 		})
 		defer t.Stop()
 	}
 	r, err := c.exchange(args, id)
-	if !c.state.CompareAndSwap(cmdRunning, cmdIdle) {
+	if !c.state.CompareAndSwap(running, idle) {
 		return r, &ProcessError{TimedOut: true, Timeout: timeout, Stderr: r.Err, Err: fmt.Errorf("timed out")}
 	}
 	return r, err
@@ -310,9 +315,11 @@ func (c *Client) exchange(args []string, id int) (Reply, error) {
 	return r, &ProcessError{Stderr: r.Err, Err: fmt.Errorf("stderr closed before %s", done)}
 }
 
-// killTree kills the process and everything it started.
+// killTree kills the process and everything it started. Once the process
+// has exited, the watcher already did that, and its id may belong to
+// another process by now.
 func (c *Client) killTree() {
-	if c.cmd == nil {
+	if c.cmd == nil || c.gone() {
 		if c.in != nil {
 			_ = c.in.Close()
 		}
@@ -355,6 +362,19 @@ func (c *Client) Close() {
 		}
 	}
 	c.release()
+}
+
+// gone reports whether the process has exited and been waited for.
+func (c *Client) gone() bool {
+	if c.exited == nil {
+		return false
+	}
+	select {
+	case <-c.exited:
+		return true
+	default:
+		return false
+	}
 }
 
 // release closes the parent ends of the pipes once the process is gone.

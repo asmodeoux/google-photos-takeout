@@ -137,7 +137,7 @@ type Report struct {
 	Import         string             `json:"import"`
 	// LegacyNonMedia lists non-media files an earlier version placed in the
 	// library folders; a rerun leaves them where they are.
-	LegacyNonMedia []string `json:"-"`
+	LegacyNonMedia []string `json:"legacy_non_media,omitempty"`
 }
 
 // TagErrorFile is one file whose tags could not be written or read back.
@@ -152,8 +152,12 @@ type FailedFile struct {
 	Error string `json:"error"`
 }
 
-// maxTagErrorFiles bounds tag_error_files and failed_files in the report.
+// maxTagErrorFiles bounds tag_error_files, failed_files and the list of
+// legacy non-media files in the report.
 const maxTagErrorFiles = 40
+
+// maxReadErrorFiles bounds read_error_files in the report.
+const maxReadErrorFiles = 20
 
 // Retries counts waits for another process, usually antivirus or the search
 // indexer, to let go of a file.
@@ -537,6 +541,7 @@ func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, 
 	}
 	defer pool.Close()
 
+	phase("read", "read tags")
 	if err := readEmbedded(pool, opt, groups, &rep); err != nil {
 		return ExitPreflight, rep, stopError(err, pool.Path(), opt.Results)
 	}
@@ -621,7 +626,7 @@ func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, 
 	if ctx.Err() != nil {
 		return ExitInterrupt, rep, nil
 	}
-	timer.next("verify")
+	phase("verify", "verify")
 	if err := verifyTags(pool, opt.Results, groups, &rep); err != nil {
 		return ExitPreflight, rep, stopError(err, pool.Path(), opt.Results)
 	}
@@ -1240,8 +1245,9 @@ func readEmbedded(pool *exiftool.Pool, opt Options, groups []group, rep *Report)
 	}
 	for _, p := range sortedFailed(failed) {
 		rep.ReadErrors++
-		if len(rep.ReadErrorFiles) < 20 {
-			g := groups[index[exiftool.PathKey(p)]]
+		i, ok := index[exiftool.PathKey(p)]
+		if ok && len(rep.ReadErrorFiles) < maxReadErrorFiles {
+			g := groups[i]
 			m := g.members[g.canon]
 			rep.ReadErrorFiles = append(rep.ReadErrorFiles, m.RelFolder+"/"+m.Name+": "+failed[p])
 		}
@@ -1576,7 +1582,7 @@ func writeTags(c tagRunner, results string, g *group, times *timeLog) error {
 	if st, err := os.Stat(g.staged); err == nil {
 		size = st.Size()
 	}
-	if err := runWrite(c, args, size, needUpdate, time.Sleep); err != nil {
+	if err := runWrite(c, args, size, needUpdate, retryWait(g.staged)); err != nil {
 		return err
 	}
 	// ExifTool replaces the file, which clears the macOS creation date.
@@ -1759,6 +1765,17 @@ func runWrite(c tagRunner, args []string, size int64, needUpdate bool, sleep fun
 			msg = msg[:500]
 		}
 		return fmt.Errorf("exiftool did not update: %s", msg)
+	}
+}
+
+// retryWait waits before a write is retried and removes the temporary copy
+// ExifTool leaves when it is killed mid-write. Pool.Run resends a crashed
+// write at once, and ExifTool refuses that resend while the copy exists, so
+// the retry that follows must find it gone.
+func retryWait(staged string) func(time.Duration) {
+	return func(d time.Duration) {
+		time.Sleep(d)
+		_ = os.Remove(staged + "_exiftool_tmp")
 	}
 }
 

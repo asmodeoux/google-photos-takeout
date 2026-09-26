@@ -319,7 +319,7 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 | `--include-trash` | check, run | Include the Trash folder. |
 | `--keep-unzipped` | run | Also extract the zips into `unzipped/`. |
 | `--no-keep-awake` | run, unzip | Let the computer sleep during the run. |
-| `--exiftool-timeout DURATION` | run, verify | Longest ExifTool may take on a small file before it is restarted. Default `2m`; larger files get longer. |
+| `--exiftool-timeout DURATION` | run, verify | Longest ExifTool may take on a small file before it is restarted. Default `2m`, at least `5s`; larger files get longer. |
 | `--exiftool PATH`, `--ffmpeg PATH` | several | Use these programs instead of the ones on PATH. |
 | `--progress auto\|tty\|plain`, `--quiet` | check, run, unzip | Progress output. |
 | `--library PATH`, `--confirm-icloud` | import-photos | Photos library to import into; allow the iCloud one. |
@@ -365,6 +365,7 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 | `filesystem`, `exiftool_version`, `export_ids` | Facts about this run. |
 | `birth_time_errors`, `birth_time_error_files` | Files whose creation date could not be set. Tags are unaffected. |
 | `retries` | `rename` and `tag`: operations that waited for another program to release a file. `exiftool_restarts`: ExifTool processes started to replace ones that crashed or hung, listed in `exiftool_log`. |
+| `legacy_non_media` | Documents an earlier version placed in a year folder or `unknown/`. A resumed run leaves them there; move them out before importing. |
 | `read_errors`, `read_error_files` | Files whose own tags ExifTool could not read; their dates came from the JSON or the name. Run again if it was a passing problem. |
 | `schema_version` | 2 since 1.1.0. |
 | `seconds`, `files_per_second` | Time per phase, and tagging speed. |
@@ -429,7 +430,7 @@ Error messages end with `See: README.md#<section>`, which links to one of these.
 **No report in the results folder.** Run `run` first, or pass the folder it wrote with `--results`.
 
 <a id="exiftool-keeps-crashing"></a>
-**ExifTool keeps crashing or timing out.** takeout restarts ExifTool when it crashes or hangs on a file, and a file that fails twice becomes a tag error. It stops with exit 2 only when ExifTool also fails on a small test photo, or fails on many files in a row. `results/.takeout/exiftool.log` lists what happened. Run the ExifTool the message names with `-ver`: if it prints a version, antivirus is the likely cause ([exclude the results folder](#antivirus)); if not, reinstall ExifTool (see [Install](#2-install)). Timeouts on a slow or network disk: raise the limit with `--exiftool-timeout 10m`. Then run the same command; finished files are kept.
+**ExifTool keeps crashing or timing out.** takeout restarts ExifTool when it crashes or hangs on a file. A crash is tried once more on a new process; a hang is not, since the file is the likely cause. A file that still fails becomes a tag error. takeout stops with exit 2 only when ExifTool also fails on a small test photo, cannot be started again, or fails on 20 of the last 100 files. `results/.takeout/exiftool.log` lists what happened. Run the ExifTool the message names with `-ver`: if it prints a version, antivirus is the likely cause ([exclude the results folder](#antivirus)); if not, reinstall ExifTool (see [Install](#2-install)). Timeouts on a slow or network disk: raise the limit with `--exiftool-timeout 10m`. Then run the same command; finished files are kept.
 
 <a id="exit-3"></a>
 **Exit 3.** Files from the zips did not reach the library: `failed_files` in `report.json` lists each one with the reason, usually a damaged zip part ("checksum error"). Download that part again from takeout.google.com, replace it in the archives folder, and run the same command; finished files are kept. Exit 3 with `album_errors` means some album copies could not be made, often because the disk is full; the library itself is complete, and the next run makes them. From `verify`, exit 3 also means a library file or album copy is missing, or a photo is in the wrong year folder.

@@ -16,7 +16,7 @@ scripts/smoke.sh          # scripts\smoke.ps1 on Windows
 | Variable | What it does | Example |
 |---|---|---|
 | `TAKEOUT_REQUIRE_TOOLS=1` | Fail instead of skip when ExifTool or ffmpeg is missing. | `TAKEOUT_REQUIRE_TOOLS=1 go test ./...` |
-| `TAKEOUT_CHAOS_SEED=N` | Replay the corpus run where ExifTool crashes at random points; the seed is in the test log. | `TAKEOUT_CHAOS_SEED=42 go test ./internal/pipeline -run CorpusSurvives -v` |
+| `TAKEOUT_CHAOS_SEED=N` | Seed for the corpus run where ExifTool crashes at seeded points: `random` tries a new schedule, a number from the test log replays one. CI uses the fixed default. | `TAKEOUT_CHAOS_SEED=42 go test ./internal/pipeline -run CorpusSurvives -v` |
 | `TAKEOUT_MEASURE_RSS=1` | Measure ExifTool's memory over 20,000 writes (macOS, Linux). Minutes. | `TAKEOUT_MEASURE_RSS=1 go test ./internal/exiftool -run MemoryGrowth -v -timeout 30m` |
 | `TAKEOUT_BENCH_DUPS=1` | Benchmark duplicate confirmation on 460 MB of zips; `TAKEOUT_BENCH_DUPS_DIR` puts them on another disk. | `TAKEOUT_BENCH_DUPS=1 go test ./internal/pipeline -run '^$' -bench ConfirmDuplicates -benchtime 3x` |
 | `TAKEOUT_FAKE_EXIFTOOL`, `TAKEOUT_FAKE_STATE` | Set by `fakeexif.Setup`, not by hand: they turn the test binary into an ExifTool that crashes or hangs on purpose. | |

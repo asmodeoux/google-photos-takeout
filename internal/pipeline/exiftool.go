@@ -44,8 +44,14 @@ func (e *destError) Unwrap() error { return e.err }
 // the same arguments the library gets.
 func probe(results string) func(run func([]string) (exiftool.Reply, error)) error {
 	return func(run func([]string) (exiftool.Reply, error)) error {
-		dir := filepath.Join(results, ".takeout", "probe")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
+		// A folder of its own, so a verify running next to a run never
+		// removes the run's test photo.
+		base := filepath.Join(results, ".takeout")
+		if err := os.MkdirAll(base, 0o755); err != nil {
+			return &destError{err}
+		}
+		dir, err := os.MkdirTemp(base, "probe-")
+		if err != nil {
 			return &destError{err}
 		}
 		defer os.RemoveAll(dir)
@@ -142,7 +148,8 @@ func (l *eventLog) written() string {
 	return l.path
 }
 
-// stopError turns a pool that gave up into the message the user sees. It is
+// stopError turns a pool that gave up into the message the user sees. Paths
+// are quoted plainly, not with %q, which would double Windows backslashes. It is
 // exit 2: something to fix, after which the same command resumes.
 func stopError(err error, exiftoolPath, results string) error {
 	var be *exiftool.BrokenError
@@ -163,6 +170,12 @@ func stopError(err error, exiftoolPath, results string) error {
 			Fix:    "the disk is slow or scanned by antivirus: exclude the results folder from scanning (README.md#antivirus), or raise the limit with --exiftool-timeout 10m; then run the same command to resume",
 			Anchor: "exiftool-keeps-crashing", Err: err,
 		}
+	case be.Restart:
+		return &RuntimeStopError{
+			Problem: "ExifTool crashed and could not be started again (" + firstLine(be.ProbeErr.Error()) + ")", Value: exiftoolPath,
+			Fix:    "run \"" + exiftoolPath + " -ver\"; if it fails, reinstall ExifTool or check that antivirus has not removed it; then run the same command to resume",
+			Anchor: "exiftool-keeps-crashing", Err: err,
+		}
 	default:
 		detail := ""
 		if be.ProbeErr != nil {
@@ -178,7 +191,7 @@ func stopError(err error, exiftoolPath, results string) error {
 		}
 		return &RuntimeStopError{
 			Problem: problem, Value: exiftoolPath,
-			Fix:    fmt.Sprintf("run %q; if it prints a version, %s, otherwise reinstall ExifTool; then run the same command to resume", exiftoolPath+" -ver", av),
+			Fix:    "run \"" + exiftoolPath + " -ver\"; if it prints a version, " + av + ", otherwise reinstall ExifTool; then run the same command to resume",
 			Anchor: "exiftool-keeps-crashing", Err: err,
 		}
 	}

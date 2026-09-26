@@ -61,6 +61,10 @@ var commands = map[string][]string{
 	"import-photos": {"results", "library", "confirm-icloud"},
 }
 
+// minExifTimeout is the shortest --exiftool-timeout: below it, a healthy
+// ExifTool would time out on ordinary files and on the health probe.
+const minExifTimeout = 5 * time.Second
+
 type cli struct {
 	archives, results, tz, albums, namesRule, exif, ff, progress, library string
 	sample                                                                int
@@ -127,8 +131,8 @@ func run(cmd string, args []string, stdout, stderr io.Writer) int {
 		}
 		return pipeline.ExitPreflight
 	}
-	if c.exifTimeout < 0 || (c.exifTimeout == 0 && slices.Contains(commands[cmd], "exiftool-timeout")) {
-		fmt.Fprintln(stderr, "--exiftool-timeout must be longer than zero, such as 10m")
+	if slices.Contains(commands[cmd], "exiftool-timeout") && c.exifTimeout < minExifTimeout {
+		fmt.Fprintf(stderr, "--exiftool-timeout must be at least %s, such as 10m\n", minExifTimeout)
 		return pipeline.ExitPreflight
 	}
 	if fs.NArg() > 0 {

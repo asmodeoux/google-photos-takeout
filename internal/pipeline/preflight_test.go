@@ -83,7 +83,7 @@ func TestReadmeHasEveryAnchor(t *testing.T) {
 	}
 	for _, be := range []*exiftool.BrokenError{
 		{ProbeErr: errors.New("p")}, {ProbeErr: &destError{errors.New("d")}},
-		{Window: true, Crashes: 20}, {Window: true, Timeouts: 20},
+		{Window: true, Crashes: 20}, {Window: true, Timeouts: 20}, {ProbeErr: errors.New("s"), Restart: true},
 	} {
 		var rs *RuntimeStopError
 		if !errors.As(stopError(be, "exiftool", "results"), &rs) {
@@ -165,4 +165,28 @@ func slug(h string) string {
 		}
 	}
 	return b.String()
+}
+
+// The fix line names ExifTool as the user would type it: a Windows path keeps
+// single backslashes. Each kind of stop has its own problem line.
+func TestStopErrorMessages(t *testing.T) {
+	const bin = `C:\Tools\exiftool.exe`
+	cases := []struct {
+		be   *exiftool.BrokenError
+		want string
+	}{
+		{&exiftool.BrokenError{ProbeErr: errors.New("p")}, "failed on a test photo"},
+		{&exiftool.BrokenError{ProbeErr: errors.New("s"), Restart: true}, "could not be started again"},
+		{&exiftool.BrokenError{Window: true, Crashes: 20}, "crashed on 20"},
+		{&exiftool.BrokenError{Window: true, Timeouts: 20}, "--exiftool-timeout"},
+	}
+	for _, c := range cases {
+		msg := stopError(c.be, bin, "results").Error()
+		if !strings.Contains(msg, c.want) {
+			t.Errorf("%+v: no %q in\n%s", c.be, c.want, msg)
+		}
+		if !c.be.Window && !strings.Contains(msg, `"`+bin+` -ver"`) {
+			t.Errorf("%+v: fix line does not name %s -ver:\n%s", c.be, bin, msg)
+		}
+	}
 }

@@ -300,8 +300,13 @@ func TestCorpusScreenshotAndTrashFlags(t *testing.T) {
 // TAKEOUT_CHAOS_SEED replays a failure.
 func TestCorpusSurvivesExifToolCrashes(t *testing.T) {
 	requireTools(t, "exiftool", "ffmpeg")
-	seed := uint64(time.Now().UnixNano())
-	if s := os.Getenv("TAKEOUT_CHAOS_SEED"); s != "" {
+	// A fixed seed keeps CI repeatable; "random" explores new schedules.
+	seed := uint64(1)
+	switch s := os.Getenv("TAKEOUT_CHAOS_SEED"); s {
+	case "":
+	case "random":
+		seed = uint64(time.Now().UnixNano())
+	default:
 		fmt.Sscan(s, &seed)
 	}
 	t.Logf("TAKEOUT_CHAOS_SEED=%d", seed)

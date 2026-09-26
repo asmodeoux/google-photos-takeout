@@ -108,7 +108,9 @@ func (r *Reporter) Finish(remove bool) {
 // writeState writes the state file, at most once a second unless forced.
 // Writing is best-effort: a failure never stops the run. r.mu is held.
 func (r *Reporter) writeState(force bool) {
-	if r.state == "" {
+	// Before the first phase there is nothing to say, and a run that stops
+	// in preflight must not create the results folder.
+	if r.state == "" || r.phase == "" {
 		return
 	}
 	now := time.Now()
