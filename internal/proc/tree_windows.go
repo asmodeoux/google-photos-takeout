@@ -76,3 +76,17 @@ func createdSince(pid uint32, started time.Time) bool {
 	// process created long before.
 	return time.Unix(0, created.Nanoseconds()).After(started.Add(-time.Second))
 }
+
+// Alive reports whether a process with this id is running.
+func Alive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+	ev, _ := windows.WaitForSingleObject(h, 0)
+	return ev == uint32(windows.WAIT_TIMEOUT)
+}

@@ -33,3 +33,12 @@ func KillTree(cmd *exec.Cmd, started time.Time) { Kill(cmd) }
 // KillTreeOnExit is a no-op on Unix: children in their own group see stdin
 // close when takeout exits, and ffmpeg is stopped through its context.
 func KillTreeOnExit() {}
+
+// Alive reports whether a process with this id exists.
+func Alive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	return err == nil || err == syscall.EPERM
+}

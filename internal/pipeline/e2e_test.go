@@ -79,7 +79,7 @@ func TestE2EAndResume(t *testing.T) {
 	}
 }
 
-func writeZip(t *testing.T, path string, files map[string][]byte) {
+func writeZip(t testing.TB, path string, files map[string][]byte) {
 	t.Helper()
 	buf := new(bytes.Buffer)
 	zw := zip.NewWriter(buf)

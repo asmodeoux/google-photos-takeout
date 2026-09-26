@@ -221,11 +221,24 @@ type group struct {
 	skip       bool
 }
 
-// Run executes check, unzip, or the full organize.
+// Run executes check, unzip, or the full organize. A full run writes its
+// phase and count to results/.takeout/progress.json for "takeout status",
+// and removes it when the run finishes; a run that stops early keeps it.
 func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if opt.Stdout == nil {
 		opt.Stdout = os.Stdout
 	}
+	pr := progress.New(opt.Stdout, opt.Progress, opt.Quiet)
+	if opt.DryRun || opt.UnzipOnly || opt.Results == "" {
+		return run(ctx, opt, pr)
+	}
+	pr.SetStateFile(filepath.Join(opt.Results, ".takeout", "progress.json"))
+	code, rep, err := run(ctx, opt, pr)
+	pr.Finish(code == ExitOK || code == ExitReconcile || code == ExitTagErrors)
+	return code, rep, err
+}
+
+func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, error) {
 	if opt.Albums == "" {
 		opt.Albums = "clone"
 	}
@@ -236,7 +249,6 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if opt.Launcher == "" {
 		opt.Launcher = DefaultLauncher(runtime.GOOS)
 	}
-	pr := progress.New(opt.Stdout, opt.Progress, opt.Quiet)
 	if err := checkRoot("archives", opt.Archives); err != nil {
 		return ExitPreflight, rep, err
 	}
@@ -396,7 +408,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 
 	groups := groupBy(items)
 	phase("duplicates", "confirm duplicates")
-	groups, err = confirmDuplicates(ctx, readers, groups)
+	groups, err = confirmDuplicates(ctx, readers, groups, func(done, total int) { pr.Tick(done, total, "") })
 	if err != nil {
 		return ExitInterrupt, rep, err
 	}
@@ -704,8 +716,16 @@ func groupBy(media []member) []group {
 // so they are the same on every run: the subgroup with the smallest hash keeps
 // the group id, the others add a short hash. An unreadable member gets its own
 // group, and extraction reports the error.
-func confirmDuplicates(ctx context.Context, readers map[string]*zipSet, groups []group) ([]group, error) {
+func confirmDuplicates(ctx context.Context, readers map[string]*zipSet, groups []group, tick func(done, total int)) ([]group, error) {
 	out := make([]group, 0, len(groups))
+	// Progress counts files, not groups: one group with many album copies
+	// would otherwise sit still for a long time.
+	total, done := 0, 0
+	for _, g := range groups {
+		if len(g.members) >= 2 {
+			total += len(g.members)
+		}
+	}
 	for _, g := range groups {
 		if len(g.members) < 2 {
 			out = append(out, g)
@@ -718,6 +738,10 @@ func confirmDuplicates(ctx context.Context, readers map[string]*zipSet, groups [
 		var order []string
 		for _, m := range g.members {
 			key, err := hashMember(readers, m.Entry)
+			done++
+			if tick != nil {
+				tick(done, total)
+			}
 			if err != nil {
 				sum := sha256.Sum256([]byte("unreadable:" + m.ZipPath + "\x00" + m.EntryName))
 				key = "~" + hex.EncodeToString(sum[:])
@@ -2733,20 +2757,46 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	return ExitOK, rep, nil
 }
 
-// Status prints one line from the journal.
+// Status describes the last run from the journal and, while a run is going
+// or after one stopped early, its phase and count. It never writes anything.
 func Status(results string) string {
+	return status(results, time.Now(), proc.Alive)
+}
+
+// A run's progress file is fresh while its heartbeat runs; a run whose
+// process still exists gets longer, since a sleeping laptop stops the beat.
+const (
+	statusFresh    = 90 * time.Second
+	statusPidFresh = 10 * time.Minute
+)
+
+func status(results string, now time.Time, alive func(int) bool) string {
+	var lines []string
 	b, err := os.ReadFile(filepath.Join(results, ".takeout", "state.jsonl"))
-	if err != nil {
+	if err == nil {
+		lines = append(lines, fmt.Sprintf("journal lines %d", strings.Count(string(b), "\n")))
+	}
+	if st, ok := progress.ReadState(filepath.Join(results, ".takeout", "progress.json")); ok {
+		age := now.Sub(st.UpdatedAt)
+		count := ""
+		if st.Total > 0 {
+			count = fmt.Sprintf(" %d/%d", st.Done, st.Total)
+		}
+		if age < statusFresh || (age < statusPidFresh && alive(st.Pid)) {
+			lines = append(lines, "running: "+st.Phase+count)
+		} else {
+			lines = append(lines, "last run stopped during "+st.Phase+count+". Run the same command to resume.")
+		}
+	}
+	if len(lines) == 0 {
 		return "no run yet"
 	}
-	n := strings.Count(string(b), "\n")
-	line := fmt.Sprintf("journal lines %d", n)
 	if rb, err := os.ReadFile(filepath.Join(results, ".takeout", "report.json")); err == nil {
 		var rep Report
 		if json.Unmarshal(rb, &rep) == nil && rep.TagErrors > 0 {
-			line += fmt.Sprintf("\n%d tag errors, see %s tag_error_files", rep.TagErrors,
-				filepath.Join(results, ".takeout", "report.json"))
+			lines = append(lines, fmt.Sprintf("%d tag errors, see %s tag_error_files", rep.TagErrors,
+				filepath.Join(results, ".takeout", "report.json")))
 		}
 	}
-	return line
+	return strings.Join(lines, "\n")
 }

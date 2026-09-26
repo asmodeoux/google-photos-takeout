@@ -3,6 +3,9 @@ package pipeline
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"math/rand/v2"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -41,7 +44,7 @@ func TestConfirmDuplicatesSplitsCRCCollisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer closeZips(readers)
-	got, err := confirmDuplicates(context.Background(), readers, groups)
+	got, err := confirmDuplicates(context.Background(), readers, groups, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +75,7 @@ func TestConfirmDuplicatesSplitsCRCCollisions(t *testing.T) {
 	for i, j := 0, len(ms)-1; i < j; i, j = i+1, j-1 {
 		ms[i], ms[j] = ms[j], ms[i]
 	}
-	got2, err := confirmDuplicates(context.Background(), readers, reversed)
+	got2, err := confirmDuplicates(context.Background(), readers, reversed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -99,5 +102,92 @@ func TestHugeSidecarIsRefusedNotRead(t *testing.T) {
 	defer closeZips(readers)
 	if _, err := readSidecar(readers, idx.Entries[0]); err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+// Duplicate confirmation reports every hashed file, so one group with many
+// copies still moves the count.
+func TestConfirmDuplicatesTicksPerFile(t *testing.T) {
+	dir := t.TempDir()
+	z := filepath.Join(dir, "takeout-20200101T000000Z-1-001.zip")
+	files := map[string][]byte{"Takeout/Google Photos/Photos from 2019/single.jpg": []byte("one")}
+	for _, album := range []string{"A", "B", "C", "D"} {
+		files["Takeout/Google Photos/"+album+"/same.jpg"] = []byte("same bytes")
+	}
+	writeZip(t, z, files)
+	idx, err := zipindex.Open([]string{z})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var items []member
+	for _, e := range idx.Entries {
+		items = append(items, member{Entry: e})
+	}
+	readers, err := openZips([]string{z})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeZips(readers)
+	var ticks [][2]int
+	if _, err := confirmDuplicates(context.Background(), readers, groupBy(items), func(d, n int) { ticks = append(ticks, [2]int{d, n}) }); err != nil {
+		t.Fatal(err)
+	}
+	if len(ticks) != 4 || ticks[3] != [2]int{4, 4} {
+		t.Fatalf("ticks %v", ticks)
+	}
+}
+
+// BenchmarkConfirmDuplicates measures duplicate confirmation on 300 groups of
+// 3 album copies of 512 KB (about 460 MB of zips, made once in
+// $TMPDIR/takeout-bench-dups and reused). Opt-in; never run in CI:
+//
+//	TAKEOUT_BENCH_DUPS=1 go test ./internal/pipeline -run '^$' -bench ConfirmDuplicates -benchtime 3x
+//
+// Set TAKEOUT_BENCH_DUPS_DIR to put the zips on another disk, such as an
+// external hard disk, where parallel reads can be slower.
+func BenchmarkConfirmDuplicates(b *testing.B) {
+	if os.Getenv("TAKEOUT_BENCH_DUPS") != "1" {
+		b.Skip("set TAKEOUT_BENCH_DUPS=1 to run")
+	}
+	dir := os.Getenv("TAKEOUT_BENCH_DUPS_DIR")
+	if dir == "" {
+		dir = filepath.Join(os.TempDir(), "takeout-bench-dups")
+	}
+	z := filepath.Join(dir, "takeout-20200101T000000Z-1-001.zip")
+	if _, err := os.Stat(z); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			b.Fatal(err)
+		}
+		rng := rand.New(rand.NewPCG(1, 2))
+		files := map[string][]byte{}
+		for g := range 300 {
+			data := make([]byte, 512<<10)
+			for i := range data {
+				data[i] = byte(rng.Uint32())
+			}
+			for _, album := range []string{"A", "B", "C"} {
+				files[fmt.Sprintf("Takeout/Google Photos/%s/%03d.jpg", album, g)] = data
+			}
+		}
+		writeZip(b, z, files)
+	}
+	idx, err := zipindex.Open([]string{z})
+	if err != nil {
+		b.Fatal(err)
+	}
+	var items []member
+	for _, e := range idx.Entries {
+		items = append(items, member{Entry: e})
+	}
+	readers, err := openZips([]string{z})
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer closeZips(readers)
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := confirmDuplicates(context.Background(), readers, groupBy(items), nil); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
