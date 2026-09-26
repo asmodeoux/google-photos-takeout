@@ -81,18 +81,19 @@ Look at a few files in `results-try`, then drop `--sample 200 --results results-
 ## What you get
 
 ```
-results/2019/          every unique photo and video, tags written inside the file
-results/unknown/       files with no trustworthy date
-results/albums/        the same files grouped by Takeout album
-results/placeholders/  Google's stand-in images for files it could not export
-results/.takeout/      report.json, report.txt and the resume journal
+results/2019/           every unique photo and video, tags written inside the file
+results/unknown/        files with no trustworthy date
+results/not-importable/ documents and videos Apple Photos cannot import
+results/albums/         the same files grouped by Takeout album
+results/placeholders/   Google's stand-in images for files it could not export
+results/.takeout/       report.json, report.txt and the resume journal
 ```
 
 - **Dates.** Stills get `DateTimeOriginal` with `OffsetTimeOriginal`. Videos get QuickTime dates in UTC plus `Keys:CreationDate` with a time zone, which is what Apple Photos reads.
 - **Time zones.** From the photo's GPS position, the camera's own offset, a photo taken nearby in time, or `--default-tz`, in that order.
 - **Places.** GPS from the JSON, written for stills and videos. Google's `0,0` "no location" is not written.
 - **Live Photos.** The still and its video share a `ContentIdentifier`, keep matching names, and the video becomes `.MOV`. Pixel `.MP` motion videos pair with their `.MP.jpg`.
-- **Nothing lost.** Every entry in every zip ends up in the library, in `unknown`, or in the report with the reason. `takeout verify` checks it again later.
+- **Nothing lost.** Every entry in every zip ends up in the library, in `unknown`, in `not-importable`, or in the report with the reason. `takeout verify` checks it again later.
 
 ## Tutorial
 
@@ -332,7 +333,7 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 | Code | Meaning | What to do |
 |---|---|---|
 | 0 | Done, and every zip entry is accounted for. | Import. |
-| 2 | Stopped before writing: missing part, ExifTool, disk space. | Follow the `Fix:` line and run again. |
+| 2 | Stopped: something to fix first, such as a missing part, ExifTool missing or crashing on every file, or disk space. Finished files are kept. | Follow the `Fix:` line, then run the same command again to resume. |
 | 3 | Some files from the zips are not in the library, or a check of the library failed. | See `failed_files` in `report.json` (a damaged zip part must be downloaded again) or the message, fix it, and run again. |
 | 4 | Finished, but some files did not take tags. | The library is usable. See `tag_error_files` in `report.json`. |
 | 130 | Interrupted. | Run the same command; it resumes. |
@@ -347,7 +348,8 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 |---|---|
 | `media`, `sidecars` | Photo and video entries, and JSON sidecars, in the zips. |
 | `unique` | Distinct files after removing identical copies (the same photo in a year folder and an album). |
-| `library`, `unknown` | Files placed in a year folder, and in `unknown/`. |
+| `library`, `unknown` | Files placed in a year folder, and in `unknown/`. Since 1.1.0 `unknown` does not count documents or unconverted videos. |
+| `not_importable` | Files in `not-importable/`: documents such as `.pdf` and `.txt` saved to Google Photos, and WebM or MKV videos that could not be converted (no ffmpeg). Apple Photos cannot import them; keep what you want from it. |
 | `placeholders` | Google's stand-in images for files it could not export. |
 | `live_pairs`, `identifier_copied` | Live Photo pairs, and pairs that needed a new `ContentIdentifier`. |
 | `tag_errors`, `tag_error_files`, `tag_error_paths` | Files that did not take their tags, with ExifTool's message (up to 40), and all their paths. |
@@ -362,7 +364,9 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 | `extension_fixes` | Files whose extension did not match their content, such as a PNG named `.jpg`. |
 | `filesystem`, `exiftool_version`, `export_ids` | Facts about this run. |
 | `birth_time_errors`, `birth_time_error_files` | Files whose creation date could not be set. Tags are unaffected. |
-| `retries` | Renames and tag writes that waited for another program to release a file. |
+| `retries` | `rename` and `tag`: operations that waited for another program to release a file. `exiftool_restarts`: ExifTool processes started to replace ones that crashed or hung, listed in `exiftool_log`. |
+| `read_errors`, `read_error_files` | Files whose own tags ExifTool could not read; their dates came from the JSON or the name. Run again if it was a passing problem. |
+| `schema_version` | 2 since 1.1.0. |
 | `seconds`, `files_per_second` | Time per phase, and tagging speed. |
 | `errors` | Everything else worth reading. |
 </details>

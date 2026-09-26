@@ -33,7 +33,7 @@ func requireTools(t *testing.T, tools ...string) {
 			if os.Getenv("TAKEOUT_REQUIRE_TOOLS") == "1" {
 				t.Fatalf("%s is required (TAKEOUT_REQUIRE_TOOLS=1)", tool)
 			}
-			t.Skipf("%s not installed", tool)
+			t.Skipf("%s not installed; set TAKEOUT_REQUIRE_TOOLS=1 to fail instead", tool)
 		}
 	}
 }

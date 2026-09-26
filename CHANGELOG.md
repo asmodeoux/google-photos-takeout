@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased (1.1.0)
+
+ExifTool that crashes or hangs no longer costs a run, documents in the Google Photos folder stay out of the library, and `takeout status` says where a run is.
+
+### Added
+
+- ExifTool is restarted when it crashes or hangs on a file, and the file is tried once more; a file that fails twice becomes a tag error. The run stops with exit 2, and a `Fix:` line, only when ExifTool also fails on a small test photo or on many files in a row. Restarts and timeouts are logged in `results/.takeout/exiftool.log`.
+- `--exiftool-timeout` for `run` and `verify`: how long ExifTool may take on a small file before it is restarted. Default 2 minutes, longer for large files.
+- `takeout status` prints the phase and count of a running run, or `last run stopped during <phase>` after one that stopped. It reads only; the run writes `results/.takeout/progress.json`.
+- Progress while confirming duplicates, one tick per file.
+- `results/not-importable/` also holds documents saved to Google Photos (`.pdf`, `.txt`, office files, archives and similar). They are never tagged or copied into albums.
+- report.json: `not_importable`, `read_errors`, `read_error_files`, `retries.exiftool_restarts`, `exiftool_log`.
+
+### Fixed
+
+- An edited copy whose name is in NFD (`-modifié` from a Takeout re-zipped on a Mac) finds its original's sidecar instead of going to `unknown/`.
+- A file of a type takeout does not recognize keeps its name instead of getting the extension twice (`image.jxl.jxl`).
+- `verify` goes through the same restarts, exits 2 with a `Fix:` line when ExifTool keeps crashing, and lists a file ExifTool could not read with the reason.
+
+### Changed: report.json
+
+`schema_version` is 2. `unknown` no longer counts files in `not-importable/`: WebM and MKV videos that could not be converted, and now documents. To get the 1.0 number, add `not_importable` to `unknown`. The identity `unique = library + unknown + not_importable + placeholders + failed + skipped Trash files` holds for every run without `--sample`.
+
+A results folder made by 1.0.0 keeps its layout when resumed: a document 1.0.0 placed in a year folder stays there, is counted in `not_importable`, and `report.txt` lists it so you can move it out. Only new results folders get the new layout.
+
 ## 1.0.0 (2026-09-25)
 
 Windows support, and fixes for export layouts reported against other Takeout tools.
