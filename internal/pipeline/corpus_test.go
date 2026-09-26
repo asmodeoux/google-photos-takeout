@@ -99,14 +99,14 @@ func runCorpus(t *testing.T, rule string) corpusResult {
 	if err != nil {
 		t.Fatal(err)
 	}
-	clients, err := startClients("", 2)
+	pool, err := exiftool.NewPool("", exiftool.PoolOptions{Size: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeClients(clients)
-	rows, errs := exiftool.ReadAll(clients, paths, goldenTags, true)
-	if len(errs) > 0 {
-		t.Fatal(errs)
+	defer pool.Close()
+	rows, failed, err := pool.ReadAll(paths, goldenTags, true)
+	if err != nil || len(failed) > 0 {
+		t.Fatal(err, failed)
 	}
 	sort.Strings(paths)
 	ids := map[string]string{}

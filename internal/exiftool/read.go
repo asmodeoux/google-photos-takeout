@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -67,48 +65,6 @@ func parseRows(out string) ([]map[string]any, error) {
 		return nil, fmt.Errorf("exiftool returned unreadable JSON: %s", out)
 	}
 	return rows, nil
-}
-
-// ReadAll reads paths in batches spread over every client and returns rows keyed
-// by PathKey(SourceFile). Batches that fail are reported; the others still count.
-func ReadAll(clients []*Client, paths, tags []string, numeric bool) (map[string]map[string]any, []error) {
-	rows := map[string]map[string]any{}
-	if len(clients) == 0 || len(paths) == 0 {
-		return rows, nil
-	}
-	var (
-		mu     sync.Mutex
-		errs   []error
-		wg     sync.WaitGroup
-		nextID atomic.Int64
-	)
-	batches := make(chan []string)
-	for _, c := range clients {
-		wg.Add(1)
-		go func(c *Client) {
-			defer wg.Done()
-			for b := range batches {
-				got, err := c.ReadJSON(b, tags, numeric, int(nextID.Add(1)))
-				mu.Lock()
-				if err != nil {
-					errs = append(errs, err)
-				}
-				for _, row := range got {
-					if src, ok := row["SourceFile"].(string); ok {
-						rows[PathKey(src)] = row
-					}
-				}
-				mu.Unlock()
-			}
-		}(c)
-	}
-	for start := 0; start < len(paths); start += ReadBatch {
-		end := min(start+ReadBatch, len(paths))
-		batches <- paths[start:end]
-	}
-	close(batches)
-	wg.Wait()
-	return rows, errs
 }
 
 // PathKey is the one form used to match a path Go built against the SourceFile

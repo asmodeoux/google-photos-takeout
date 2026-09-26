@@ -58,6 +58,18 @@ func TestStrayArgumentIsRejected(t *testing.T) {
 	}
 }
 
+func TestExiftoolTimeoutMustBePositive(t *testing.T) {
+	for _, v := range []string{"0", "-1m"} {
+		var out, errOut bytes.Buffer
+		if code := run("verify", []string{"--exiftool-timeout", v}, &out, &errOut); code != pipeline.ExitPreflight {
+			t.Errorf("%s: exit %d", v, code)
+		}
+		if !strings.Contains(errOut.String(), "--exiftool-timeout must be longer than zero") {
+			t.Errorf("%s: %q", v, errOut.String())
+		}
+	}
+}
+
 func TestShellQuote(t *testing.T) {
 	for _, c := range []struct{ in, goos, want string }{
 		{`D:\Takeout $x`, "windows", `'D:\Takeout $x'`},

@@ -36,7 +36,7 @@ const (
 type Rules struct {
 	CrashOn           []int  // exit before running these commands
 	CrashAfterReplyOn []int  // run these, then exit before passing on {readyN}
-	Poison            string // exit before running any command that contains this
+	Poison            string // exit before running any command that contains this; "|" separates alternatives
 	Hang              string // never answer a command that contains this
 	CrashAll          bool   // exit before running any command
 	ExceptVersion     bool   // with CrashAll: "-ver" still works
@@ -159,7 +159,7 @@ func run(real, state string) int {
 			case r.Hang != "" && strings.Contains(text, r.Hang):
 				time.Sleep(time.Minute)
 				return 3
-			case r.Poison != "" && strings.Contains(text, r.Poison),
+			case r.Poison != "" && containsAny(text, strings.Split(r.Poison, "|")),
 				contains(r.CrashOn, n),
 				r.CrashAll && !(r.ExceptVersion && strings.Contains(text, "-ver\n")):
 				return 3
@@ -221,6 +221,15 @@ func appendLine(file, s string) {
 	}
 	fmt.Fprintln(f, s)
 	f.Close()
+}
+
+func containsAny(s string, subs []string) bool {
+	for _, x := range subs {
+		if x != "" && strings.Contains(s, x) {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(xs []int, n int) bool {

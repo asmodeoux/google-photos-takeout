@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"github.com/asmodeoux/google-photos-takeout/internal/exiftool"
 	"os"
 	"strings"
 	"testing"
@@ -38,10 +39,10 @@ func TestYearFoldersMatchDates(t *testing.T) {
 
 func yearMismatchesForTest(t *testing.T, root string) ([]string, error) {
 	t.Helper()
-	clients, err := startClients("", 1)
+	pool, err := exiftool.NewPool("", exiftool.PoolOptions{Size: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer closeClients(clients)
-	return YearMismatches(clients, root, nil)
+	defer pool.Close()
+	return YearMismatches(pool, root, nil)
 }

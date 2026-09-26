@@ -17,7 +17,7 @@ type blockingRunner struct {
 	release chan struct{}
 }
 
-func (b *blockingRunner) Run(args []string, id int) (exiftool.Reply, error) {
+func (b *blockingRunner) Run(args []string, size int64) (exiftool.Reply, error) {
 	b.started <- struct{}{}
 	<-b.release
 	return exiftool.Reply{Out: "    1 image files updated\n"}, nil
@@ -51,7 +51,8 @@ func TestTagAllFinishesInFlightWriteAfterCancel(t *testing.T) {
 	var rep Report
 	result := make(chan bool)
 	go func() {
-		result <- tagAll(ctx, nil, 5*time.Second, []tagRunner{r}, func() { t.Error("killed") }, groups, results, j, &rep, &timeLog{}, nil)
+		stopped, _ := tagAll(ctx, nil, 5*time.Second, 1, r, func() { t.Error("killed") }, groups, results, j, &rep, &timeLog{}, nil)
+		result <- stopped
 	}()
 	<-r.started
 	cancel()
@@ -100,7 +101,8 @@ func TestTagAllKillsAfterGraceOrForce(t *testing.T) {
 		// A real kill makes the ExifTool call in flight return.
 		kill := func() { close(killed); close(r.release) }
 		go func() {
-			result <- tagAll(ctx, force, grace, []tagRunner{r}, kill, groups, results, j, &rep, &timeLog{}, nil)
+			stopped, _ := tagAll(ctx, force, grace, 1, r, kill, groups, results, j, &rep, &timeLog{}, nil)
+			result <- stopped
 		}()
 		<-r.started
 		cancel()
@@ -140,7 +142,7 @@ func TestTagAllWaitsForWorkersAfterKill(t *testing.T) {
 	var rep Report
 	done := make(chan struct{})
 	go func() {
-		tagAll(ctx, nil, 50*time.Millisecond, []tagRunner{r}, kill, groups, results, j, &rep, &timeLog{}, nil)
+		tagAll(ctx, nil, 50*time.Millisecond, 1, r, kill, groups, results, j, &rep, &timeLog{}, nil)
 		returned.Store(true)
 		close(done)
 	}()

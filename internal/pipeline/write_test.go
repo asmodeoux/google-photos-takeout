@@ -13,7 +13,7 @@ type scriptedRunner struct {
 	calls   int
 }
 
-func (s *scriptedRunner) Run(args []string, id int) (exiftool.Reply, error) {
+func (s *scriptedRunner) Run(args []string, size int64) (exiftool.Reply, error) {
 	r := s.replies[min(s.calls, len(s.replies)-1)]
 	s.calls++
 	return r, nil

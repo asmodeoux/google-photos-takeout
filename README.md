@@ -337,6 +337,9 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 <a id="verify"></a>
 **No report in the results folder.** Run `run` first, or pass the folder it wrote with `--results`.
 
+<a id="exiftool-keeps-crashing"></a>
+**ExifTool keeps crashing or timing out.** takeout restarts ExifTool when it crashes or hangs on a file, and a file that fails twice becomes a tag error. It stops with exit 2 only when ExifTool also fails on a small test photo, or fails on many files in a row. `results/.takeout/exiftool.log` lists what happened. Run the ExifTool the message names with `-ver`: if it prints a version, antivirus is the likely cause ([exclude the results folder](#antivirus)); if not, reinstall ExifTool (see [Install](#2-install)). Timeouts on a slow or network disk: raise the limit with `--exiftool-timeout 10m`. Then run the same command; finished files are kept.
+
 <a id="exit-3"></a>
 **Exit 3.** Files from the zips did not reach the library: `failed_files` in `report.json` lists each one with the reason, usually a damaged zip part ("checksum error"). Download that part again from takeout.google.com, replace it in the archives folder, and run the same command; finished files are kept. Exit 3 with `album_errors` means some album copies could not be made, often because the disk is full; the library itself is complete, and the next run makes them. From `verify`, exit 3 also means a library file or album copy is missing, or a photo is in the wrong year folder.
 

@@ -78,6 +78,16 @@ func TestReadmeHasEveryAnchor(t *testing.T) {
 			}
 		}
 	}
+	for _, be := range []*exiftool.BrokenError{
+		{ProbeErr: errors.New("p")}, {ProbeErr: &destError{errors.New("d")}},
+		{Window: true, Crashes: 20}, {Window: true, Timeouts: 20},
+	} {
+		var rs *RuntimeStopError
+		if !errors.As(stopError(be, "exiftool", "results"), &rs) {
+			t.Fatalf("%+v is not a RuntimeStopError", be)
+		}
+		anchors[rs.Anchor] = true
+	}
 	anchors["verify"] = true
 	for a := range anchors {
 		if !strings.Contains(string(readme), `<a id="`+a+`"></a>`) {

@@ -15,7 +15,9 @@ import (
 // capture date is a different year. A file in results/2018 must say 2018.
 // Files takeout cannot write tags into, such as CR3 and AVI, are skipped.
 // skip lists results-relative slash paths to leave out.
-func YearMismatches(clients []*exiftool.Client, root string, skip map[string]bool) ([]string, error) {
+// A file ExifTool failed on is listed with the reason; a pool that gave up is
+// returned as the error.
+func YearMismatches(pool *exiftool.Pool, root string, skip map[string]bool) ([]string, error) {
 	var files []string
 	years := map[string]string{}
 	entries, err := os.ReadDir(root)
@@ -45,15 +47,19 @@ func YearMismatches(clients []*exiftool.Client, root string, skip map[string]boo
 			return nil, err
 		}
 	}
-	rows, errs := exiftool.ReadAll(clients, files, []string{"DateTimeOriginal", "CreationDate", "XMP:DateCreated"}, false)
-	if len(errs) > 0 {
-		return nil, fmt.Errorf("exiftool: %w", errs[0])
+	rows, failed, err := pool.ReadAll(files, []string{"DateTimeOriginal", "CreationDate", "XMP:DateCreated"}, false)
+	if err != nil {
+		return nil, err
 	}
 	var bad []string
 	for _, p := range files {
 		row, ok := rows[exiftool.PathKey(p)]
 		if !ok {
-			bad = append(bad, fmt.Sprintf("%s is in %s but has no readable date", filepath.Base(p), years[p]))
+			why := ""
+			if f, ok := failed[p]; ok {
+				why = " (" + f + ")"
+			}
+			bad = append(bad, fmt.Sprintf("%s is in %s but has no readable date%s", filepath.Base(p), years[p], why))
 			continue
 		}
 		got := tagYear(fmt.Sprint(row["DateTimeOriginal"]))
