@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -141,5 +143,60 @@ func TestProbeBlamesTheDisk(t *testing.T) {
 	msg := stopError(&exiftool.BrokenError{ProbeErr: err}, "/bin/exiftool", results).Error()
 	if !strings.Contains(msg, "cannot write a test photo in the results folder") || !strings.Contains(msg, "#disk-space") {
 		t.Fatalf("message:\n%s", msg)
+	}
+}
+
+// A file whose own tags ExifTool cannot read, even on a second try, is
+// counted in read_errors under its Takeout name, and its tags are not
+// written: the camera's date would be replaced by the sidecar's. A rerun
+// with a working ExifTool finishes it.
+func TestRunUnreadableFileKeepsItsTags(t *testing.T) {
+	arch, results := fakeTakeout(t, "a", "b")
+	sum := sha256.Sum256(testgen.JPEG(1)) // a.jpg; its staged copy is named by this
+	opt := fakeOptions(t, fakeexif.Rules{Poison: hex.EncodeToString(sum[:])}, arch, results)
+	code, rep, err := Run(context.Background(), opt)
+	if code != ExitTagErrors {
+		t.Fatalf("exit %d: %v %v", code, err, rep.Errors)
+	}
+	if rep.ReadErrors != 1 || len(rep.ReadErrorFiles) != 1 || !strings.HasPrefix(rep.ReadErrorFiles[0], "Photos from 2019/a.jpg: ") {
+		t.Fatalf("read errors %d %q", rep.ReadErrors, rep.ReadErrorFiles)
+	}
+	if rep.TagErrors != 1 || !strings.Contains(strings.Join(rep.Errors, "\n"), "tags not written") {
+		t.Fatalf("tag errors %d %q", rep.TagErrors, rep.Errors)
+	}
+	opt.Exiftool = ""
+	if code, rep, err := Run(context.Background(), opt); code != ExitOK || rep.TagErrors != 0 {
+		t.Fatalf("rerun exit %d: %v %v", code, err, rep.Errors)
+	}
+}
+
+// verify that cannot read a library file says so with exit 2 and names the
+// file; it is not a photo in the wrong year folder (exit 3).
+func TestVerifyUnreadableFileIsNotAWrongYear(t *testing.T) {
+	arch, results := fakeTakeout(t, "a", "b")
+	if code, rep, err := Run(context.Background(), testOptions(arch, results)); code != ExitOK {
+		t.Fatalf("run exit %d: %v %v", code, err, rep.Errors)
+	}
+	bin, _ := fakeexif.Setup(t, fakeexif.Rules{Poison: "a.jpg"})
+	code, _, err := Verify(context.Background(), Options{Results: results, Exiftool: bin})
+	var rs *RuntimeStopError
+	if code != ExitPreflight || !errors.As(err, &rs) {
+		t.Fatalf("exit %d: %v", code, err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "could not read 1 library files") || !strings.Contains(msg, "a.jpg (") {
+		t.Fatalf("message:\n%s", msg)
+	}
+}
+
+// A file whose date cannot be read back after the write is a tag error that
+// says why, not "date did not read back" with empty values.
+func TestRunReadBackFailureSaysWhy(t *testing.T) {
+	arch, results := fakeTakeout(t, "a", "b")
+	code, rep, err := Run(context.Background(), fakeOptions(t, fakeexif.Rules{Poison: "a.jpg"}, arch, results))
+	if code != ExitTagErrors {
+		t.Fatalf("exit %d: %v %v", code, err, rep.Errors)
+	}
+	if len(rep.TagErrorFiles) != 1 || !strings.HasPrefix(rep.TagErrorFiles[0].Stderr, "date could not be read back: ") {
+		t.Fatalf("tag error files %+v", rep.TagErrorFiles)
 	}
 }

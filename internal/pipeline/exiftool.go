@@ -30,6 +30,20 @@ func startPool(opt Options, size int, log *eventLog) (*exiftool.Pool, error) {
 	return exiftool.NewPool(opt.Exiftool, o)
 }
 
+// killOnForce stops the pool's processes at once when force closes (a
+// second Ctrl+C), in any phase. The returned function ends the watch.
+func killOnForce(force <-chan struct{}, pool *exiftool.Pool) func() {
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-force:
+			pool.Kill()
+		case <-done:
+		}
+	}()
+	return func() { close(done) }
+}
+
 // tunePool lets tests shrink the pool's limits.
 var tunePool func(*exiftool.PoolOptions)
 
@@ -194,6 +208,18 @@ func stopError(err error, exiftoolPath, results string) error {
 			Fix:    "run \"" + exiftoolPath + " -ver\"; if it prints a version, " + av + ", otherwise reinstall ExifTool; then run the same command to resume",
 			Anchor: "exiftool-keeps-crashing", Err: err,
 		}
+	}
+}
+
+// errUnreadable is verify finding library files ExifTool could not read.
+// The library may be fine; the check could not finish (exit 2).
+func errUnreadable(files []string) error {
+	n := min(len(files), 8)
+	return &RuntimeStopError{
+		Problem: fmt.Sprintf("ExifTool could not read %d library files, so their year folders were not checked", len(files)),
+		Value:   strings.Join(files[:n], "; "),
+		Fix:     "run verify again; on a slow disk or with antivirus scanning the results folder (README.md#antivirus), add --exiftool-timeout 10m",
+		Anchor:  "exiftool-keeps-crashing",
 	}
 }
 

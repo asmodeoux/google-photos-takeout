@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"github.com/asmodeoux/google-photos-takeout/internal/exiftool"
 	"os"
 	"strings"
@@ -44,5 +45,6 @@ func yearMismatchesForTest(t *testing.T, root string) ([]string, error) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	return YearMismatches(pool, root, nil)
+	bad, unreadable, err := YearMismatches(context.Background(), pool, root, nil)
+	return append(bad, unreadable...), err
 }

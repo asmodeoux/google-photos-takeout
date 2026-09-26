@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/asmodeoux/google-photos-takeout/internal/progress"
+	"github.com/asmodeoux/google-photos-takeout/internal/state"
 	"github.com/asmodeoux/google-photos-takeout/internal/testgen"
 )
 
@@ -88,5 +90,27 @@ func TestProgressFileLifecycle(t *testing.T) {
 	}
 	if got := Status(results); !strings.HasPrefix(got, "journal lines ") || strings.Contains(got, "\n") {
 		t.Fatalf("after a finished run: %q", got)
+	}
+}
+
+// A second run on a results folder in use stops before it reads the zips,
+// and leaves the first run's progress file alone.
+func TestSecondRunStopsAtOnceAndKeepsProgress(t *testing.T) {
+	arch, results := fakeTakeout(t, "a")
+	release, err := state.Lock(filepath.Join(results, ".takeout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	live := progress.State{Phase: "tags", Done: 1, Total: 2, Pid: os.Getpid(), UpdatedAt: time.Now().UTC()}
+	writeState(t, results, live)
+	before, _ := os.ReadFile(filepath.Join(results, ".takeout", "progress.json"))
+	code, _, err := Run(context.Background(), testOptions(arch, results))
+	if code != ExitPreflight || !errors.Is(err, state.ErrLocked) {
+		t.Fatalf("exit %d: %v", code, err)
+	}
+	after, _ := os.ReadFile(filepath.Join(results, ".takeout", "progress.json"))
+	if string(after) != string(before) {
+		t.Fatalf("progress.json changed:\n%s\n%s", before, after)
 	}
 }

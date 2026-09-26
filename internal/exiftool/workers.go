@@ -1,6 +1,7 @@
 package exiftool
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -18,7 +19,8 @@ import (
 //	                                                                 │ timeout: no resend
 //	                                                                 ▼
 //	                                              failed lineage ─► crash run ≥ MaxCrashRun ─► probe
-//	                                                             └─► failure window full   ─► broken
+//	                                                             └─► failure window full ─┬─ mostly timeouts ─► broken
+//	                                                                                       └─ mostly crashes ─► probe
 //	probe: a real write and read-back on a fresh process; only a failed probe
 //	(or a process that cannot start) breaks the pool.
 //
@@ -51,10 +53,9 @@ type Pool struct {
 type PoolOptions struct {
 	Size           int           // processes; default 4
 	CommandTimeout time.Duration // floor of the per-command time limit; default 2 minutes
-	MinThroughput  int64         // bytes per second used to raise the limit for big files; default 5 MB/s
 	MaxCrashRun    int           // failed lineages in a row before the pool probes; default 3
 	Window         int           // lineages remembered for the failure window; default 100
-	WindowFailures int           // failures in the window that stop the run; default 20
+	WindowFailures int           // failures in the window that stop the run (timeouts) or start a probe (crashes); default 20
 	// Probe checks a fresh process with real work. It gets a function that
 	// runs one command on that process. nil runs "-ver".
 	Probe func(run func(args []string) (Reply, error)) error
@@ -71,6 +72,10 @@ type Event struct {
 }
 
 type outcome struct{ failed, timedOut bool }
+
+// minThroughput is the slowest a command is expected to process a file, in
+// bytes per second; it raises the time limit for big files.
+const minThroughput = 5 << 20
 
 // ErrPoolBroken is returned by every call once the pool gave up.
 var ErrPoolBroken = errors.New("exiftool keeps failing")
@@ -119,9 +124,6 @@ func NewPool(bin string, o PoolOptions) (*Pool, error) {
 	if o.CommandTimeout <= 0 {
 		o.CommandTimeout = 2 * time.Minute
 	}
-	if o.MinThroughput <= 0 {
-		o.MinThroughput = 5 << 20
-	}
 	if o.MaxCrashRun <= 0 {
 		o.MaxCrashRun = 3
 	}
@@ -161,7 +163,7 @@ func (p *Pool) timeout(size int64) time.Duration {
 	if size <= 0 {
 		return t
 	}
-	if byThroughput := time.Duration(size/p.o.MinThroughput+1) * time.Second; byThroughput > t {
+	if byThroughput := time.Duration(size/minThroughput+1) * time.Second; byThroughput > t {
 		t = byThroughput
 	}
 	return t
@@ -305,10 +307,24 @@ func (p *Pool) settle(o outcome) {
 		}
 	}
 	if crashes+timeouts >= p.o.WindowFailures && p.broken == nil && !p.killed {
-		p.breakLocked(&BrokenError{Path: p.bin, Window: true, Crashes: crashes, Timeouts: timeouts})
-		p.mu.Unlock()
-		p.emit(Event{Kind: "stopped", Detail: fmt.Sprintf("%d crashes, %d timeouts in the last %d commands", crashes, timeouts, len(p.window))})
-		return
+		// Mostly timeouts: the disk or antivirus is too slow, and a probe on
+		// a tiny photo would not show it. Stop.
+		if timeouts >= crashes {
+			p.breakLocked(&BrokenError{Path: p.bin, Window: true, Crashes: crashes, Timeouts: timeouts})
+			p.mu.Unlock()
+			p.emit(Event{Kind: "stopped", Detail: fmt.Sprintf("%d crashes, %d timeouts in the last %d commands", crashes, timeouts, len(p.window))})
+			return
+		}
+		// Mostly crashes: ask the probe. If a real write works, ExifTool is
+		// fine and these files crash it; they stay tag errors and the run
+		// goes on, or a resume would stop on them every time.
+		if !p.probing {
+			p.window, p.next = nil, 0
+			p.probing = true
+			p.mu.Unlock()
+			p.runProbe()
+			return
+		}
 	}
 	switch {
 	case !o.failed:
@@ -329,6 +345,24 @@ func (p *Pool) settle(o outcome) {
 	if probe {
 		p.runProbe()
 	}
+}
+
+// Check runs the health probe now. A caller that saw files fail and wants
+// to know whether ExifTool itself works uses it: a failed probe breaks the
+// pool and Check returns that error.
+func (p *Pool) Check() error {
+	p.mu.Lock()
+	for p.probing && !p.killed && p.broken == nil {
+		p.cond.Wait()
+	}
+	if p.killed || p.broken != nil {
+		p.mu.Unlock()
+		return p.stopped()
+	}
+	p.probing = true
+	p.mu.Unlock()
+	p.runProbe()
+	return p.stopped()
 }
 
 // runProbe checks a fresh process with real work, outside the lock so Kill
@@ -444,10 +478,11 @@ func (p *Pool) emit(e Event) {
 // ReadAll reads tags from paths in batches of ReadBatch spread over the pool.
 // Rows are keyed by PathKey(SourceFile). A batch whose process fails is
 // resent once (not after a timeout), then read one file at a time, so a file
-// that crashes ExifTool costs only itself. failed maps the paths that still
-// could not be read to the reason. err is ErrKilled or a pool-broken error;
-// then the rows are incomplete.
-func (p *Pool) ReadAll(paths, tags []string, numeric bool) (rows map[string]map[string]any, failed map[string]string, err error) {
+// that crashes ExifTool costs only itself; after MaxCrashRun failures in a
+// row the rest of that batch is given up. failed maps the paths that still
+// could not be read to the reason. err is ctx's error, ErrKilled or a
+// pool-broken error; then the rows are incomplete.
+func (p *Pool) ReadAll(ctx context.Context, paths, tags []string, numeric bool) (rows map[string]map[string]any, failed map[string]string, err error) {
 	rows = map[string]map[string]any{}
 	failed = map[string]string{}
 	if len(paths) == 0 {
@@ -471,7 +506,7 @@ func (p *Pool) ReadAll(paths, tags []string, numeric bool) (rows map[string]map[
 		go func() {
 			defer wg.Done()
 			for b := range batches {
-				got, bad, err := p.readBatch(b, tags, numeric)
+				got, bad, err := p.readBatch(ctx, b, tags, numeric)
 				mu.Lock()
 				add(got)
 				for k, v := range bad {
@@ -484,6 +519,7 @@ func (p *Pool) ReadAll(paths, tags []string, numeric bool) (rows map[string]map[
 			}
 		}()
 	}
+feed:
 	for start := 0; start < len(paths); start += ReadBatch {
 		mu.Lock()
 		stop := fatal != nil
@@ -491,15 +527,22 @@ func (p *Pool) ReadAll(paths, tags []string, numeric bool) (rows map[string]map[
 		if stop {
 			break
 		}
-		batches <- paths[start:min(start+ReadBatch, len(paths))]
+		select {
+		case batches <- paths[start:min(start+ReadBatch, len(paths))]:
+		case <-ctx.Done():
+			break feed
+		}
 	}
 	close(batches)
 	wg.Wait()
+	if fatal == nil {
+		fatal = ctx.Err()
+	}
 	return rows, failed, fatal
 }
 
 // readBatch is one lineage: the batch, its resend, then single-file reads.
-func (p *Pool) readBatch(batch, tags []string, numeric bool) ([]map[string]any, map[string]string, error) {
+func (p *Pool) readBatch(ctx context.Context, batch, tags []string, numeric bool) ([]map[string]any, map[string]string, error) {
 	args, err := readArgs(batch, tags, numeric)
 	if err != nil {
 		return nil, nil, err
@@ -529,12 +572,27 @@ func (p *Pool) readBatch(batch, tags []string, numeric bool) ([]map[string]any, 
 	var got []map[string]any
 	failed := map[string]string{}
 	anyOK, anyTimeout := false, pe.TimedOut
-	for _, path := range batch {
+	// Read one file at a time. When ExifTool fails on several files in a
+	// row, the trouble is not one file but the disk or ExifTool itself: the
+	// rest of the batch is given up, so a hang on every file costs a few
+	// timeouts per batch, not one per file.
+	inARow := 0
+	for i, path := range batch {
+		if ctx.Err() != nil {
+			return got, failed, ctx.Err()
+		}
+		if inARow >= p.o.MaxCrashRun {
+			why := fmt.Sprintf("not read: ExifTool failed on the %d files before it", inARow)
+			for _, rest := range batch[i:] {
+				failed[rest] = why
+			}
+			break
+		}
 		one, _ := readArgs([]string{path}, tags, numeric)
 		r, err := p.try(one, fileSize(path))
 		switch {
 		case err == nil:
-			anyOK = true
+			anyOK, inARow = true, 0
 			rs, perr := parseRows(r.Out)
 			if perr != nil {
 				failed[path] = perr.Error()
@@ -543,6 +601,7 @@ func (p *Pool) readBatch(batch, tags []string, numeric bool) ([]map[string]any, 
 		case !isStop(err) && errors.As(err, &pe):
 			anyTimeout = anyTimeout || pe.TimedOut
 			failed[path] = pe.Error()
+			inARow++
 		default:
 			return got, failed, err
 		}

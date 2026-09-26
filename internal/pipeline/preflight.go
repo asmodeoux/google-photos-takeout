@@ -20,7 +20,16 @@ type PreflightError struct {
 	Err     error
 }
 
-func (e *PreflightError) Error() string { return problemFixSee(e.Problem, e.Value, e.Fix, e.Anchor) }
+func (e *PreflightError) Error() string {
+	var b strings.Builder
+	b.WriteString(e.Problem)
+	if e.Value != "" {
+		b.WriteString(": " + e.Value)
+	}
+	b.WriteString("\nFix: " + e.Fix)
+	b.WriteString("\nSee: README.md#" + e.Anchor)
+	return b.String()
+}
 
 func (e *PreflightError) Unwrap() error { return e.Err }
 
@@ -28,28 +37,11 @@ func (e *PreflightError) Unwrap() error { return e.Err }
 // such as an ExifTool that keeps crashing (exit 2). Finished files are kept,
 // and the same command resumes once the problem is fixed. It prints like a
 // PreflightError.
-type RuntimeStopError struct {
-	Problem string
-	Value   string
-	Fix     string
-	Anchor  string
-	Err     error
-}
+type RuntimeStopError PreflightError
 
-func (e *RuntimeStopError) Error() string { return problemFixSee(e.Problem, e.Value, e.Fix, e.Anchor) }
+func (e *RuntimeStopError) Error() string { return (*PreflightError)(e).Error() }
 
 func (e *RuntimeStopError) Unwrap() error { return e.Err }
-
-func problemFixSee(problem, value, fix, anchor string) string {
-	var b strings.Builder
-	b.WriteString(problem)
-	if value != "" {
-		b.WriteString(": " + value)
-	}
-	b.WriteString("\nFix: " + fix)
-	b.WriteString("\nSee: README.md#" + anchor)
-	return b.String()
-}
 
 // DefaultLauncher is how a user starts takeout when no launcher script set
 // TAKEOUT_LAUNCHER.

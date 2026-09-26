@@ -1,6 +1,7 @@
 package exiftool
 
 import (
+	"context"
 	"io"
 	"os"
 	"os/exec"
@@ -200,7 +201,7 @@ func TestReadJSONNonASCIIAndMissing(t *testing.T) {
 	}
 	defer pool.Close()
 	// A missing file is ExifTool's own error, not a failed process.
-	rows, failed, err := pool.ReadAll([]string{good, filepath.Join(dir, "missing.jpg")}, []string{"DateTimeOriginal"}, false)
+	rows, failed, err := pool.ReadAll(context.Background(), []string{good, filepath.Join(dir, "missing.jpg")}, []string{"DateTimeOriginal"}, false)
 	if err != nil || len(failed) != 0 {
 		t.Fatal(err, failed)
 	}
@@ -294,7 +295,7 @@ func TestReadAllFindsRelativePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	rows, failed, err := pool.ReadAll([]string{rel}, []string{"FileType"}, false)
+	rows, failed, err := pool.ReadAll(context.Background(), []string{rel}, []string{"FileType"}, false)
 	if err != nil || len(failed) > 0 {
 		t.Fatal(err, failed)
 	}

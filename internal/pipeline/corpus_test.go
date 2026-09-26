@@ -126,7 +126,7 @@ func runCorpusWith(t *testing.T, rule string, tune func(*Options)) (corpusResult
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	rows, failed, err := pool.ReadAll(paths, goldenTags, true)
+	rows, failed, err := pool.ReadAll(context.Background(), paths, goldenTags, true)
 	if err != nil || len(failed) > 0 {
 		t.Fatal(err, failed)
 	}

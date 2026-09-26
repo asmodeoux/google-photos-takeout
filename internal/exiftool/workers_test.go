@@ -1,6 +1,7 @@
 package exiftool
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -87,7 +88,7 @@ func TestPoolReplaysWriteWhoseReplyWasLost(t *testing.T) {
 func TestPoolReadBatchCrashLosesNoRows(t *testing.T) {
 	p, _ := newFakePool(t, fakeexif.Rules{CrashOn: []int{1}}, PoolOptions{Size: 1})
 	files := photos(t, 5, plain)
-	rows, failed, err := p.ReadAll(files, []string{"FileType"}, false)
+	rows, failed, err := p.ReadAll(context.Background(), files, []string{"FileType"}, false)
 	if err != nil || len(failed) != 0 || len(rows) != 5 {
 		t.Fatalf("rows %d failed %v err %v", len(rows), failed, err)
 	}
@@ -105,7 +106,7 @@ func TestPoolPoisonFileInReadBatchCostsOnlyItself(t *testing.T) {
 				}
 				return plain(i)
 			})
-			rows, failed, err := p.ReadAll(files, []string{"FileType"}, false)
+			rows, failed, err := p.ReadAll(context.Background(), files, []string{"FileType"}, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -304,7 +305,7 @@ func TestPoolTimeoutFailsFileWithoutResend(t *testing.T) {
 }
 
 func TestPoolTimeoutGrowsWithFileSize(t *testing.T) {
-	p := &Pool{o: PoolOptions{CommandTimeout: 2 * time.Minute, MinThroughput: 5 << 20}}
+	p := &Pool{o: PoolOptions{CommandTimeout: 2 * time.Minute}}
 	if got := p.timeout(1 << 20); got != 2*time.Minute {
 		t.Fatalf("small file: %s", got)
 	}
@@ -407,5 +408,66 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("timed out waiting")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// A read batch that times out is not resent; read one file at a time, only
+// the file that hangs is lost.
+func TestPoolReadBatchTimeoutCostsOnlyTheHangingFile(t *testing.T) {
+	p, _ := newFakePool(t, fakeexif.Rules{Hang: "hang.jpg"}, PoolOptions{Size: 1, CommandTimeout: time.Second})
+	files := photos(t, 4, func(i int) string {
+		if i == 2 {
+			return "hang.jpg"
+		}
+		return plain(i)
+	})
+	rows, failed, err := p.ReadAll(context.Background(), files, []string{"FileType"}, false)
+	if err != nil || len(failed) != 1 || failed[files[2]] == "" || len(rows) != 3 {
+		t.Fatalf("rows %d failed %v err %v", len(rows), failed, err)
+	}
+}
+
+// When ExifTool hangs on every file, a batch costs a few timeouts, not one
+// per file.
+func TestPoolReadHangOnEveryFileGivesUpTheBatch(t *testing.T) {
+	p, _ := newFakePool(t, fakeexif.Rules{Hang: ".jpg"}, PoolOptions{Size: 1, CommandTimeout: time.Second, WindowFailures: 50})
+	files := photos(t, ReadBatch, plain)
+	start := time.Now()
+	rows, failed, err := p.ReadAll(context.Background(), files, []string{"FileType"}, false)
+	if len(rows) != 0 || len(failed) != len(files) {
+		t.Fatalf("rows %d failed %d err %v", len(rows), len(failed), err)
+	}
+	// The batch, then MaxCrashRun single files: about four timeouts of 1s.
+	if d := time.Since(start); d > 15*time.Second {
+		t.Fatalf("took %s", d)
+	}
+}
+
+// Many files that crash ExifTool while ExifTool itself works do not stop the
+// run: a resume, which skips the finished files, would stop on them again.
+func TestPoolCrashWindowAsksTheProbe(t *testing.T) {
+	p, _ := newFakePool(t, fakeexif.Rules{Poison: "poison"}, PoolOptions{Size: 1, Window: 10, WindowFailures: 3})
+	files := photos(t, 8, func(i int) string { return fmt.Sprintf("poison%02d.jpg", i) })
+	for _, f := range files {
+		var fe *FileError
+		if _, err := p.Run(writeArgs(f), 0); !errors.As(err, &fe) {
+			t.Fatalf("%s: %v", filepath.Base(f), err)
+		}
+	}
+	mustWrite(t, p, photos(t, 1, plain)[0])
+}
+
+// Ctrl+C stops a read: no new batch starts once the context is done.
+func TestPoolReadAllStopsOnCancel(t *testing.T) {
+	p, state := newFakePool(t, fakeexif.Rules{}, PoolOptions{Size: 1})
+	files := photos(t, 3*ReadBatch, plain)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, err := p.ReadAll(ctx, files, []string{"FileType"}, false)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err %v", err)
+	}
+	if n := fakeexif.Commands(state); n > 1 {
+		t.Fatalf("%d batches sent after cancel", n)
 	}
 }

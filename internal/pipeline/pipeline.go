@@ -229,6 +229,9 @@ type group struct {
 	// album copies still need space.
 	albumsOnly bool
 	skip       bool
+	// readErr is why ExifTool could not read the file's own tags. Its tags
+	// are then not written, so the camera's date is never overwritten.
+	readErr string
 }
 
 // Run executes check, unzip, or the full organize. A full run writes its
@@ -272,6 +275,16 @@ func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, 
 	}
 	if len(zips) == 0 {
 		return ExitPreflight, rep, errNoZips(opt.Archives, opt.Launcher, runtime.GOOS)
+	}
+	// A run holds the results folder from the start, so a second run stops
+	// at once instead of after minutes of hashing, and never writes the
+	// first one's progress file.
+	if !opt.DryRun && !opt.UnzipOnly && opt.Results != "" {
+		release, err := lockResults(opt)
+		if err != nil {
+			return ExitPreflight, rep, err
+		}
+		defer release()
 	}
 	timer := &phaseTimer{}
 	renameStart, tagStart := media.RenameRetries.Load(), tagRetries.Load()
@@ -339,7 +352,10 @@ func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, 
 	}
 	defer closeZips(readers)
 
-	sidecars := map[string]*scInfo{}
+	// Sidecars by exact name, then by NFC name and by folded case; the last
+	// two count only when one sidecar has that name.
+	sidecarsExact := map[string]*scInfo{}
+	sidecars := map[string][]*scInfo{}
 	// sidecarsFolded finds a sidecar whose name differs only in case. It is
 	// used only when exactly one sidecar has that name.
 	sidecarsFolded := map[string][]*scInfo{}
@@ -367,7 +383,9 @@ func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, 
 				skippedJSON = append(skippedJSON, e)
 				continue
 			}
-			sidecars[match.Key(e.RelFolder, e.Name)] = sc
+			sidecarsExact[match.ExactKey(e.RelFolder, e.Name)] = sc
+			key := match.Key(e.RelFolder, e.Name)
+			sidecars[key] = append(sidecars[key], sc)
 			fold := match.FoldKey(e.RelFolder, e.Name)
 			sidecarsFolded[fold] = append(sidecarsFolded[fold], sc)
 			skippedJSON = append(skippedJSON, e)
@@ -398,13 +416,21 @@ func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, 
 		}
 		cands := match.Candidates(m.Name)
 		for _, c := range cands {
-			if sc, ok := sidecars[match.Key(m.RelFolder, c)]; ok {
+			if sc, ok := sidecarsExact[match.ExactKey(m.RelFolder, c)]; ok {
 				m.sc = sc
-				if !match.TitleAgrees(m.Name, sc.Title) {
-					rep.Errors = append(rep.Errors, "title mismatch "+m.Name+" vs "+sc.Title)
-				}
 				break
 			}
+		}
+		if m.sc == nil {
+			for _, c := range cands {
+				if found := sidecars[match.Key(m.RelFolder, c)]; len(found) == 1 {
+					m.sc = found[0]
+					break
+				}
+			}
+		}
+		if m.sc != nil && !match.TitleAgrees(m.Name, m.sc.Title) {
+			rep.Errors = append(rep.Errors, "title mismatch "+m.Name+" vs "+m.sc.Title)
 		}
 		if m.sc == nil {
 			for _, c := range cands {
@@ -446,18 +472,6 @@ func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, 
 	if err != nil {
 		return ExitPreflight, rep, err
 	}
-	release, err := state.Lock(filepath.Join(opt.Results, ".takeout"))
-	if errors.Is(err, state.ErrNoLocking) {
-		fmt.Fprintf(opt.Stdout, "note: %v. Do not start a second takeout on %s while this one runs.\n", err, opt.Results)
-		err = nil
-	}
-	if err != nil {
-		if errors.Is(err, state.ErrLocked) {
-			err = errLocked(err)
-		}
-		return ExitPreflight, rep, err
-	}
-	defer release()
 	journal, err := state.OpenJournal(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
 	if err != nil {
 		return ExitPreflight, rep, err
@@ -540,9 +554,13 @@ func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, 
 		return ExitPreflight, rep, err
 	}
 	defer pool.Close()
+	defer killOnForce(opt.Force, pool)()
 
 	phase("read", "read tags")
-	if err := readEmbedded(pool, opt, groups, &rep); err != nil {
+	if err := readEmbedded(ctx, pool, opt, groups, &rep); err != nil {
+		if ctx.Err() != nil {
+			return ExitInterrupt, rep, nil
+		}
 		return ExitPreflight, rep, stopError(err, pool.Path(), opt.Results)
 	}
 	if ctx.Err() != nil {
@@ -627,7 +645,10 @@ func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, 
 		return ExitInterrupt, rep, nil
 	}
 	phase("verify", "verify")
-	if err := verifyTags(pool, opt.Results, groups, &rep); err != nil {
+	if err := verifyTags(ctx, pool, opt.Results, groups, &rep); err != nil {
+		if ctx.Err() != nil {
+			return ExitInterrupt, rep, nil
+		}
 		return ExitPreflight, rep, stopError(err, pool.Path(), opt.Results)
 	}
 	timer.next("")
@@ -1227,7 +1248,7 @@ func cleanPartial(dir string) {
 // readEmbedded reads the tags already in each staged file. A file ExifTool
 // cannot read is treated as having no embedded tags; one it failed on is also
 // counted in read_errors. The error is a pool that gave up.
-func readEmbedded(pool *exiftool.Pool, opt Options, groups []group, rep *Report) error {
+func readEmbedded(ctx context.Context, pool *exiftool.Pool, opt Options, groups []group, rep *Report) error {
 	var paths []string
 	index := map[string]int{}
 	for i := range groups {
@@ -1237,16 +1258,42 @@ func readEmbedded(pool *exiftool.Pool, opt Options, groups []group, rep *Report)
 		paths = append(paths, groups[i].staged)
 		index[exiftool.PathKey(groups[i].staged)] = i
 	}
-	byKey, failed, err := pool.ReadAll(paths, []string{
-		"DateTimeOriginal", "OffsetTimeOriginal", "CreationDate", "CreateDate",
-		"GPSLatitude", "GPSLongitude", "ContentIdentifier"}, true)
+	tags := []string{"DateTimeOriginal", "OffsetTimeOriginal", "CreationDate", "CreateDate",
+		"GPSLatitude", "GPSLongitude", "ContentIdentifier"}
+	byKey, failed, err := pool.ReadAll(ctx, paths, tags, true)
 	if err != nil {
 		return err
+	}
+	// A failure is often passing (antivirus, a busy disk): try those once
+	// more before giving up on them.
+	if len(failed) > 0 {
+		again, still, err := pool.ReadAll(ctx, sortedFailed(failed), tags, true)
+		if err != nil {
+			return err
+		}
+		for k, row := range again {
+			byKey[k] = row
+		}
+		failed = still
+	}
+	// Files that fail twice are either bad files or a broken ExifTool; the
+	// probe tells which, so a broken install stops here (exit 2) instead of
+	// leaving every file untagged.
+	if len(failed) > 0 {
+		if err := pool.Check(); err != nil {
+			return err
+		}
 	}
 	for _, p := range sortedFailed(failed) {
 		rep.ReadErrors++
 		i, ok := index[exiftool.PathKey(p)]
-		if ok && len(rep.ReadErrorFiles) < maxReadErrorFiles {
+		if !ok {
+			continue
+		}
+		// Without the file's own tags, a write could replace the camera's
+		// date and offset with the sidecar's; the write is left for a rerun.
+		groups[i].readErr = failed[p]
+		if len(rep.ReadErrorFiles) < maxReadErrorFiles {
 			g := groups[i]
 			m := g.members[g.canon]
 			rep.ReadErrorFiles = append(rep.ReadErrorFiles, m.RelFolder+"/"+m.Name+": "+failed[p])
@@ -1554,6 +1601,9 @@ func resolveDates(groups []group, opt Options) {
 func writeTags(c tagRunner, results string, g *group, times *timeLog) error {
 	if !exiftool.Within(results, g.staged) && !strings.Contains(g.staged, ".takeout") {
 		return fmt.Errorf("refusing to write outside results: %s", g.staged)
+	}
+	if g.readErr != "" {
+		return fmt.Errorf("tags not written: ExifTool could not read the file's own tags first (%s); run the same command again", g.readErr)
 	}
 	var existing *time.Time
 	if g.haveEmb {
@@ -2296,6 +2346,20 @@ func ledger(entries []zipindex.Entry, groups []group, skipped, screenshots []zip
 	return out
 }
 
+// lockResults takes the results folder's lock. A disk that cannot lock gets
+// a note instead of a refusal.
+func lockResults(opt Options) (func(), error) {
+	release, err := state.Lock(filepath.Join(opt.Results, ".takeout"))
+	if errors.Is(err, state.ErrNoLocking) {
+		fmt.Fprintf(opt.Stdout, "note: %v. Do not start a second takeout on %s while this one runs.\n", err, opt.Results)
+		return release, nil
+	}
+	if errors.Is(err, state.ErrLocked) {
+		return nil, errLocked(err)
+	}
+	return release, err
+}
+
 // nonMedia lists the extensions of files Apple Photos cannot import that
 // turn up in Google Photos folders: documents, archives and app data. Any
 // other unrecognized file stays in the library, since Photos may read it.
@@ -2385,7 +2449,7 @@ func fillReport(rep *Report, groups []group) {
 
 // verifyTags reads back the date of every tagged file. A file whose date is
 // missing or wrong is a tag error. The error is a pool that gave up.
-func verifyTags(pool *exiftool.Pool, results string, groups []group, rep *Report) error {
+func verifyTags(ctx context.Context, pool *exiftool.Pool, results string, groups []group, rep *Report) error {
 	type item struct {
 		i    int
 		path string
@@ -2408,7 +2472,7 @@ func verifyTags(pool *exiftool.Pool, results string, groups []group, rep *Report
 	for i, it := range items {
 		paths[i] = it.path
 	}
-	rows, failed, err := pool.ReadAll(paths, []string{"DateTimeOriginal", "CreationDate"}, false)
+	rows, failed, err := pool.ReadAll(ctx, paths, []string{"DateTimeOriginal", "CreationDate"}, false)
 	if err != nil {
 		return err
 	}
@@ -2788,6 +2852,7 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 		return ExitPreflight, rep, err
 	}
 	defer pool.Close()
+	defer killOnForce(opt.Force, pool)()
 	// Files with tag errors are known to lack their date; they are exit 4, not
 	// a wrong year.
 	known := map[string]bool{}
@@ -2797,7 +2862,10 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	for _, f := range rep.TagErrorFiles {
 		known[filepath.ToSlash(f.Path)] = true
 	}
-	bad, err := YearMismatches(pool, opt.Results, known)
+	bad, unreadable, err := YearMismatches(ctx, pool, opt.Results, known)
+	if ctx.Err() != nil {
+		return ExitInterrupt, rep, nil
+	}
 	if errors.Is(err, exiftool.ErrPoolBroken) {
 		return ExitPreflight, rep, stopError(err, pool.Path(), opt.Results)
 	}
@@ -2810,6 +2878,9 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 			n = 8
 		}
 		return ExitReconcile, rep, fmt.Errorf("%d files are in the wrong year folder, for example: %s", len(bad), strings.Join(bad[:n], "; "))
+	}
+	if len(unreadable) > 0 {
+		return ExitPreflight, rep, errUnreadable(unreadable)
 	}
 	_ = ctx
 	if opt.Stdout != nil {

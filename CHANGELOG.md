@@ -6,7 +6,7 @@ ExifTool that crashes or hangs no longer costs a run, documents in the Google Ph
 
 ### Added
 
-- ExifTool is restarted when it crashes or hangs on a file. A crash is tried once more on a new process; a hang is not, since the file is the likely cause. A file that still fails becomes a tag error. The run stops with exit 2, and a `Fix:` line, only when ExifTool also fails on a small test photo, cannot be started again, or fails on 20 of the last 100 files. Restarts and timeouts are logged in `results/.takeout/exiftool.log`.
+- ExifTool is restarted when it crashes or hangs on a file. A crash is tried once more on a new process; a hang is not, since the file is the likely cause. A file that still fails becomes a tag error. The run stops with exit 2, and a `Fix:` line, only when ExifTool also fails on a small test photo, cannot be started again, or times out on most of 20 failures among the last 100 files. Files that crash a working ExifTool stay tag errors and the run goes on, so a resume never stops on them. Restarts and timeouts are logged in `results/.takeout/exiftool.log`.
 - `--exiftool-timeout` for `run` and `verify`: how long ExifTool may take on a small file before it is restarted. Default 2 minutes, longer for large files; at least 5 seconds.
 - `takeout status` prints the phase and count of a running run, or `last run stopped during <phase>` after one that stopped. It reads only; the run writes `results/.takeout/progress.json`.
 - Progress while confirming duplicates, one tick per file.
@@ -17,7 +17,11 @@ ExifTool that crashes or hangs no longer costs a run, documents in the Google Ph
 
 - An edited copy whose name is in NFD (`-modifié` from a Takeout re-zipped on a Mac) finds its original's sidecar instead of going to `unknown/`.
 - A file of a type takeout does not recognize keeps its name instead of getting the extension twice (`image.jxl.jxl`).
-- `verify` goes through the same restarts, exits 2 with a `Fix:` line when ExifTool keeps crashing, and lists a file ExifTool could not read with the reason.
+- `verify` goes through the same restarts, exits 2 with a `Fix:` line when ExifTool keeps crashing or cannot read library files (instead of calling them "in the wrong year folder", exit 3), and names each file with the reason.
+- A file whose own tags ExifTool cannot read, even on a second try, is not written to: the camera's date and time zone were replaced with the sidecar's. It is listed in `read_errors` and is a tag error that the next run retries.
+- A second `takeout run` on a results folder in use stops at once, before reading the zips, and no longer overwrites the running one's progress.
+- Ctrl+C stops the tag reads and `verify` too; a second Ctrl+C stops ExifTool in every phase.
+- Two sidecars whose names differ only in Unicode normal form each go to the photo spelled the same way.
 
 ### Changed: report.json
 

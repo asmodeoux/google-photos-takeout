@@ -194,3 +194,27 @@ func TestFillReportFailedPlaceholder(t *testing.T) {
 		t.Errorf("failed %d library %d unknown %d not_importable %d", rep.Failed, rep.Library, rep.Unknown, rep.NotImportable)
 	}
 }
+
+// Two sidecars whose names differ only in normal form each belong to the
+// photo spelled the same way; neither takes the other's date.
+func TestSidecarsDifferingOnlyInNormalForm(t *testing.T) {
+	requireTools(t, "exiftool")
+	dir := t.TempDir()
+	tk := testgen.New()
+	nfc, nfd := "été.jpg", "été.jpg"
+	tk.Photo(1, "Photos from 2019", nfc, testgen.JPEG(1), &testgen.Side{Taken: time.Date(2018, 5, 1, 9, 0, 0, 0, time.UTC)})
+	tk.Photo(1, "Photos from 2019", nfd, testgen.JPEG(2), &testgen.Side{Taken: time.Date(2019, 5, 1, 9, 0, 0, 0, time.UTC)})
+	arch := filepath.Join(dir, "archives")
+	if _, err := tk.Write(arch); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(dir, "results")
+	if code, rep, err := Run(context.Background(), testOptions(arch, out)); code != ExitOK {
+		t.Fatalf("exit %d: %v %v", code, err, rep.Errors)
+	}
+	for _, y := range []string{"2018", "2019"} {
+		if _, err := os.Stat(filepath.Join(out, y, nfc)); err != nil {
+			t.Errorf("%s: %v", y, err)
+		}
+	}
+}

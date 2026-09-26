@@ -131,11 +131,14 @@ func TestCandidatesNormalizeNFC(t *testing.T) {
 	if Key("Trip", nfd) != Key("Trip", nfc) || FoldKey("Trip", nfd) != FoldKey("Trip", nfc) {
 		t.Error("keys differ by normal form")
 	}
-	// fit51 counts NFC bytes: an NFD name 51 bytes long is shorter in NFC.
-	long := strings.Repeat("é", 20) + ".jpg"
-	for _, c := range Candidates(long) {
-		if !norm.NFC.IsNormalString(c) {
-			t.Errorf("candidate %+q is not NFC", c)
-		}
+	// The name as written comes first, then its NFC form, whose 51-byte
+	// truncation is counted in NFC bytes.
+	long := strings.Repeat("e\u0301", 20) + ".jpg"
+	c := Candidates(long)
+	if c[0] != long+".supplemental-metadata.json" || !has(c, fit51(norm.NFC.String(long)+".supplemental-metadata")) {
+		t.Errorf("candidates %+q", c)
+	}
+	if ExactKey("Trip", nfd) == ExactKey("Trip", nfc) {
+		t.Error("exact keys must keep the normal form")
 	}
 }

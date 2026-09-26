@@ -19,20 +19,32 @@ var (
 	}
 )
 
-// Key is folder + filename, the only lookup. Names are not matched across
-// folders. The name is compared in NFC: a Takeout re-zipped on a Mac can
-// spell "-modifié" in NFD in one file and NFC in its sidecar.
+// Key is folder + filename in NFC: a Takeout re-zipped on a Mac can spell
+// "-modifié" in NFD in one file and NFC in its sidecar. Names are not
+// matched across folders. Two sidecars can share a Key when their names
+// differ only in normal form, so ExactKey is tried first.
 func Key(folder, name string) string {
 	return folder + "\x00" + norm.NFC.String(name)
 }
 
+// ExactKey is folder + filename byte for byte.
+func ExactKey(folder, name string) string {
+	return folder + "\x00" + name
+}
+
 // Candidates lists sidecar filenames to try, most specific first.
 // Every name is complete. A shorter file never matches a longer one.
-// Names are NFC, so the localized suffixes and the 51-byte limit apply to
-// the same bytes whichever form the zip used.
+// The name as written comes first, then its NFC form, so the localized
+// suffixes and the 51-byte limit also apply when the zip used NFD.
 func Candidates(name string) []string {
-	name = norm.NFC.String(name)
-	var out []string
+	out := candidates(name, nil)
+	if nfc := norm.NFC.String(name); nfc != name {
+		out = candidates(nfc, out)
+	}
+	return out
+}
+
+func candidates(name string, out []string) []string {
 	add := func(s string) {
 		if s == "" {
 			return
