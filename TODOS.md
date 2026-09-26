@@ -14,6 +14,7 @@ Deferred from the Windows support plan, and known limitations.
 - **`takeout status --json`** for agents and scripts.
 - **A doctor check that keeps one ExifTool running** through a few hundred writes, to catch antivirus that kills it only under load.
 - **Recycling ExifTool processes** did not ship: memory stayed flat at 46.8 MB over 20,000 writes (ExifTool 13.25, macOS arm64). Measure again on Windows and Linux with `TAKEOUT_MEASURE_RSS=1` before adding it.
+- **Windows Job Object for ExifTool.** The process tree is found from a snapshot right after exiftool.exe exits; a job object with kill-on-close would need no process ids at all and close the small id-reuse window left.
 - **`import-photos` must skip non-media by kind** once it lists files, including documents that 1.0.0 placed in year folders.
 - **Pin ffmpeg in CI.** Windows CI installs the current ffmpeg from Chocolatey without a checksum. It is only used by tests, not shipped.
 - **Dates before 1990 in file names and camera clocks** are rejected as likely wrong. Sidecar dates are accepted back to 1800.
