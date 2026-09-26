@@ -121,7 +121,13 @@ func (r *Reporter) writeState(force bool) {
 	if err == nil {
 		tmp := r.state + ".tmp"
 		if err = os.WriteFile(tmp, b, 0o644); err == nil {
-			err = os.Rename(tmp, r.state)
+			if err = os.Rename(tmp, r.state); err != nil {
+				// Windows refuses to replace a file that antivirus or a
+				// reader has open. Write in place instead: ReadState
+				// ignores a file caught half-written.
+				_ = os.Remove(tmp)
+				err = os.WriteFile(r.state, b, 0o644)
+			}
 		}
 	}
 	if err != nil && !r.stateErr && !r.quiet {

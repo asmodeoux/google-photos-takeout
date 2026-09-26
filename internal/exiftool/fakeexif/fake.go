@@ -123,6 +123,20 @@ func Main() {
 }
 
 func run(real, state string) int {
+	// A one-off command such as the "-ver" check before a run goes straight
+	// to the real ExifTool; only -stay_open processes follow the rules.
+	if !stayOpen(os.Args[1:]) {
+		c := exec.Command(real, os.Args[1:]...)
+		c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := c.Run(); err != nil {
+			var ee *exec.ExitError
+			if errors.As(err, &ee) {
+				return ee.ExitCode()
+			}
+			return 2
+		}
+		return 0
+	}
 	var r Rules
 	if b, err := os.ReadFile(filepath.Join(state, "rules.json")); err == nil {
 		_ = json.Unmarshal(b, &r)
@@ -246,6 +260,15 @@ func appendLine(file, s string) {
 	}
 	fmt.Fprintln(f, s)
 	f.Close()
+}
+
+func stayOpen(args []string) bool {
+	for _, a := range args {
+		if strings.EqualFold(a, "-stay_open") {
+			return true
+		}
+	}
+	return false
 }
 
 func containsAny(s string, subs []string) bool {

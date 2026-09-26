@@ -73,8 +73,8 @@ jobs:
         run: |
           case "$RUNNER_OS" in
             Windows) scripts/test.sh TestPathKeyUnixKeepsBackslashAndCase TestCorpusAppleNames TestAlbumCopyFailureIsNotSuccess TestYearFoldersMatchDates ;;
-            macOS) scripts/test.sh TestImportPhotosOffMacOSExplains TestYearFoldersMatchDates ;;
-            *) scripts/test.sh TestYearFoldersMatchDates ;;
+            macOS) scripts/test.sh TestImportPhotosOffMacOSExplains TestYearFoldersMatchDates TestExifToolMemoryGrowth ;;
+            *) scripts/test.sh TestYearFoldersMatchDates TestExifToolMemoryGrowth ;;
           esac
       - name: go test -race
         if: runner.os != 'Windows'
