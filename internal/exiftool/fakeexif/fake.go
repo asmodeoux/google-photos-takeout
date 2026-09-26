@@ -12,6 +12,8 @@ package fakeexif
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +37,7 @@ const (
 // across all fake processes, starting at 1.
 type Rules struct {
 	CrashOn           []int  // exit before running these commands
+	CrashOnceOn       []int  // like CrashOn, but a retry of a command that crashed goes through
 	CrashAfterReplyOn []int  // run these, then exit before passing on {readyN}
 	Poison            string // exit before running any command that contains this; "|" separates alternatives
 	Hang              string // never answer a command that contains this
@@ -163,6 +166,8 @@ func run(real, state string) int {
 				contains(r.CrashOn, n),
 				r.CrashAll && !(r.ExceptVersion && strings.Contains(text, "-ver\n")):
 				return 3
+			case contains(r.CrashOnceOn, n) && firstCrash(state, text):
+				return 3
 			case n == r.OrphanOn:
 				orphan(state)
 				return 3
@@ -201,6 +206,26 @@ func nextCommand(state string) int {
 			return n
 		}
 	}
+}
+
+// firstCrash records a crash on this command text and says whether it is
+// the first. The pool resends a crashed command, often after other workers'
+// commands have taken the next numbers, so numbers alone cannot spare it.
+// The {errdoneN} marker differs per attempt, so it is left out.
+func firstCrash(state, text string) bool {
+	var args []string
+	for _, l := range strings.Split(text, "\n") {
+		if !strings.HasPrefix(l, "{errdone") {
+			args = append(args, l)
+		}
+	}
+	sum := sha256.Sum256([]byte(strings.Join(args, "\n")))
+	f, err := os.OpenFile(filepath.Join(state, "fired", "crash-"+hex.EncodeToString(sum[:8])), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return false
+	}
+	f.Close()
+	return true
 }
 
 // orphan starts a process that inherits stdout and outlives the fake, like

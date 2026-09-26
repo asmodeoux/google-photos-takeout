@@ -180,3 +180,17 @@ func TestLedgerAndReportNonMedia(t *testing.T) {
 		t.Errorf("legacy %v", rep.LegacyNonMedia)
 	}
 }
+
+// A placeholder whose extraction failed is counted by pickCanon in
+// placeholders and here in failed; the report identity subtracts it once.
+func TestFillReportFailedPlaceholder(t *testing.T) {
+	groups := []group{
+		{members: []member{testMember("A", "p.jpg"), testMember("B", "p.jpg"), testMember("C", "p.jpg")}, trueType: "jpeg", placeholder: true, failErr: "crc"},
+		{members: []member{testMember("A", "q.jpg")}, trueType: "jpeg", placeholder: true, outRel: "placeholders/q.jpg"},
+	}
+	rep := Report{Years: map[string]int{}, Sources: map[string]int{}, TZ: map[string]int{}}
+	fillReport(&rep, groups)
+	if rep.Failed != 1 || rep.Library != 0 || rep.Unknown != 0 || rep.NotImportable != 0 {
+		t.Errorf("failed %d library %d unknown %d not_importable %d", rep.Failed, rep.Library, rep.Unknown, rep.NotImportable)
+	}
+}

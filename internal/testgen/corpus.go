@@ -233,6 +233,39 @@ func Corpus() *Takeout {
 	t.Put(2, "Trip", "desktop.ini", []byte("[.ShellClassInfo]"))
 	t.Row("symlink-entry-skipped")
 	t.PutLink(1, y19, "link.jpg", "../../../etc/passwd")
+
+	// Google's placeholder: the same small image in several albums, each
+	// copy with its own date, stands in for a photo that was not exported.
+	t.Row("google-placeholder-small-file-three-dates")
+	ph := JPEG(next())
+	for i, album := range []string{"Placeholder A", "Placeholder B", "Placeholder C"} {
+		t.Photo(2, album, "missing.jpg", ph, &Side{Taken: at(2019, 12, 10, 9, i*5, 0)})
+	}
+
+	// Localized "edited" copies share the original's sidecar. A Takeout
+	// re-zipped on a Mac can mix NFD and NFC names.
+	t.Row("edited-suffix-german")
+	t.Photo(1, y19, "de-edit.jpg", JPEG(next()), &Side{Taken: at(2019, 12, 11, 9, 0, 0)})
+	t.Put(1, y19, "de-edit-bearbeitet.jpg", JPEG(next()))
+	t.Row("edited-suffix-french-nfc")
+	t.Photo(1, y19, "fr-nfc.jpg", JPEG(next()), &Side{Taken: at(2019, 12, 12, 9, 0, 0)})
+	t.Put(1, y19, "fr-nfc-modifi\u00e9.jpg", JPEG(next()))
+	t.Row("edited-suffix-french-nfd-copy-nfc-original")
+	t.Photo(1, y19, "fr-nfd.jpg", JPEG(next()), &Side{Taken: at(2019, 12, 13, 9, 0, 0)})
+	t.Put(1, y19, "fr-nfd-modifie\u0301.jpg", JPEG(next()))
+	t.Row("edited-suffix-french-all-nfd")
+	t.Photo(1, y19, "e\u0301te\u0301.jpg", JPEG(next()), &Side{Taken: at(2019, 12, 14, 9, 0, 0)})
+	t.Put(1, y19, "e\u0301te\u0301-modifie\u0301.jpg", JPEG(next()))
+	t.Row("edited-suffix-japanese")
+	t.Photo(1, y19, "ja-edit.jpg", JPEG(next()), &Side{Taken: at(2019, 12, 15, 9, 0, 0)})
+	t.Put(1, y19, "ja-edit-編集済み.jpg", JPEG(next()))
+
+	// Documents saved to Google Photos are not media Apple Photos imports.
+	t.Row("non-media-txt-and-pdf-go-to-not-importable")
+	t.Put(1, y19, "notes.txt", []byte("synthetic notes\n"))
+	pdf := []byte("%PDF-1.4\n% synthetic\n%%EOF\n")
+	t.Photo(1, y19, "doc.pdf", pdf, &Side{Taken: at(2019, 12, 16, 9, 0, 0)})
+	t.Photo(2, "Documents", "doc.pdf", pdf, &Side{Taken: at(2019, 12, 16, 9, 0, 0)})
 	return t
 }
 

@@ -182,6 +182,14 @@
       "DateTimeOriginal": "2019:12:05 10:00:00",
       "OffsetTimeOriginal": "+01:00"
     },
+    "2019/de-edit-bearbeitet.jpg": {
+      "DateTimeOriginal": "2019:12:11 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/de-edit.jpg": {
+      "DateTimeOriginal": "2019:12:11 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
     "2019/dup(1).jpg": {
       "DateTimeOriginal": "2019:07:04 11:00:00",
       "OffsetTimeOriginal": "+02:00"
@@ -205,11 +213,35 @@
       "DateTimeOriginal": "2019:06:10 11:00:00",
       "OffsetTimeOriginal": "+02:00"
     },
+    "2019/fr-nfc-modifié.jpg": {
+      "DateTimeOriginal": "2019:12:12 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/fr-nfc.jpg": {
+      "DateTimeOriginal": "2019:12:12 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/fr-nfd-modifié.jpg": {
+      "DateTimeOriginal": "2019:12:13 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/fr-nfd.jpg": {
+      "DateTimeOriginal": "2019:12:13 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
     "2019/gps-moscow.jpg": {
       "DateTimeOriginal": "2019:06:06 14:23:31",
       "GPSLatitude": "55.7558",
       "GPSLongitude": "37.6173",
       "OffsetTimeOriginal": "+03:00"
+    },
+    "2019/ja-edit-編集済み.jpg": {
+      "DateTimeOriginal": "2019:12:15 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/ja-edit.jpg": {
+      "DateTimeOriginal": "2019:12:15 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
     },
     "2019/meta.jpg": {
       "DateTimeOriginal": "2019:07:15 11:00:00",
@@ -291,6 +323,14 @@
       "DateTimeOriginal": "2019:06:07 12:00:00",
       "OffsetTimeOriginal": "+03:00"
     },
+    "2019/été-modifié.jpg": {
+      "DateTimeOriginal": "2019:12:14 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
+    "2019/été.jpg": {
+      "DateTimeOriginal": "2019:12:14 10:00:00",
+      "OffsetTimeOriginal": "+01:00"
+    },
     "2019/Ёлка 🌅.jpg": {
       "DateTimeOriginal": "2019:07:09 11:00:00",
       "OffsetTimeOriginal": "+02:00"
@@ -334,6 +374,9 @@
       "DateTimeOriginal": "2019:12:03 10:00:00",
       "OffsetTimeOriginal": "+01:00"
     },
+    "not-importable/doc.pdf": {},
+    "not-importable/notes.txt": {},
+    "placeholders/missing.jpg": {},
     "unknown/AMB.jpg": {},
     "unknown/lonely.jpg": {},
     "unknown/no-date-at-all.jpg": {}
@@ -349,7 +392,7 @@
       "filename": 5,
       "filename-date": 2,
       "json-creation": 2,
-      "json-taken": 58,
+      "json-taken": 68,
       "live": 2
     },
     "errors": null,
@@ -375,39 +418,42 @@
       "cr3": 1,
       "gif": 1,
       "heic": 4,
-      "jpeg": 45,
+      "jpeg": 55,
       "mov": 6,
       "mp4": 6,
       "png": 3,
       "raw": 2,
       "tiff": 1,
+      "unknown": 2,
       "webp": 1
     },
-    "library": 69,
+    "library": 79,
     "live_pairs": 5,
-    "media": 75,
+    "media": 91,
     "motion_photos": 1,
     "names_rule": "portable",
-    "placeholders": 0,
-    "sidecars": 64,
+    "not_importable": 2,
+    "placeholders": 1,
+    "screenshots_excluded": 0,
+    "sidecars": 74,
     "symlinks_skipped": 1,
     "system_files_ignored": 5,
     "tag_errors": 0,
     "timezone_steps": {
-      "default": 43,
+      "default": 53,
       "filename": 5,
       "gps": 11,
       "neighbor": 10
     },
-    "unique": 73,
+    "unique": 86,
     "unknown": 3,
-    "untagged": 3,
+    "untagged": 5,
     "years": {
       "1965": 1,
       "2016": 1,
       "2017": 1,
       "2018": 1,
-      "2019": 65
+      "2019": 75
     }
   }
 }

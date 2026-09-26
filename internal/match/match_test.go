@@ -1,6 +1,11 @@
 package match
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"golang.org/x/text/unicode/norm"
+)
 
 func has(c []string, want string) bool {
 	for _, s := range c {
@@ -99,6 +104,38 @@ func TestLiveHalvesShareTitle(t *testing.T) {
 	} {
 		if got := LiveStem(name); got != want {
 			t.Errorf("LiveStem(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+// A Takeout re-zipped on a Mac can store a name in NFD while its sidecar
+// is NFC, or the other way round. Both find the sidecar.
+func TestCandidatesNormalizeNFC(t *testing.T) {
+	nfc := "photo-modifié.jpg"
+	nfd := "photo-modifié.jpg"
+	sidecar := Key("Trip", "photo.jpg.supplemental-metadata.json")
+	for _, name := range []string{nfc, nfd} {
+		found := false
+		for _, c := range Candidates(name) {
+			if Key("Trip", c) == sidecar {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%+q: no candidate for the original's sidecar", name)
+		}
+		if !TitleAgrees(name, "photo.jpg") {
+			t.Errorf("%+q: title does not agree", name)
+		}
+	}
+	if Key("Trip", nfd) != Key("Trip", nfc) || FoldKey("Trip", nfd) != FoldKey("Trip", nfc) {
+		t.Error("keys differ by normal form")
+	}
+	// fit51 counts NFC bytes: an NFD name 51 bytes long is shorter in NFC.
+	long := strings.Repeat("é", 20) + ".jpg"
+	for _, c := range Candidates(long) {
+		if !norm.NFC.IsNormalString(c) {
+			t.Errorf("candidate %+q is not NFC", c)
 		}
 	}
 }
