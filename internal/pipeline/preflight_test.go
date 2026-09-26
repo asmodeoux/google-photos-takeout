@@ -2,10 +2,13 @@ package pipeline
 
 import (
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/asmodeoux/google-photos-takeout/internal/exiftool"
 	"github.com/asmodeoux/google-photos-takeout/internal/state"
@@ -89,9 +92,77 @@ func TestReadmeHasEveryAnchor(t *testing.T) {
 		anchors[rs.Anchor] = true
 	}
 	anchors["verify"] = true
+	// Every anchor written in the code, even one no test case reaches.
+	lit := regexp.MustCompile(`Anchor:\s*"([a-z0-9-]+)"|README\.md#([a-z0-9-]+)`)
+	for _, root := range []string{"..", filepath.Join("..", "..", "cmd")} {
+		filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(p, ".go") || strings.HasSuffix(p, "_test.go") {
+				return err
+			}
+			b, _ := os.ReadFile(p)
+			for _, m := range lit.FindAllStringSubmatch(string(b), -1) {
+				anchors[m[1]+m[2]] = true
+			}
+			return nil
+		})
+	}
+
+	// A link to an anchor inside a closed <details> lands on a folded
+	// block, so anchors live outside them.
+	text := string(readme)
+	var hidden []bool // hidden[i]: byte i is inside <details>
+	depth := 0
+	for i := 0; i < len(text); i++ {
+		switch {
+		case strings.HasPrefix(text[i:], "<details>"):
+			depth++
+		case strings.HasPrefix(text[i:], "</details>"):
+			depth--
+			if depth < 0 {
+				t.Fatalf("README.md: </details> without <details> at byte %d", i)
+			}
+		}
+		hidden = append(hidden, depth > 0)
+	}
+	if depth != 0 {
+		t.Fatalf("README.md: %d <details> not closed", depth)
+	}
+	targets := map[string]int{} // anchor -> byte offset
+	for _, m := range regexp.MustCompile(`<a id="([^"]+)"></a>`).FindAllStringSubmatchIndex(text, -1) {
+		id := text[m[2]:m[3]]
+		if hidden[m[0]] {
+			t.Errorf("README.md: anchor %q is inside <details>", id)
+		}
+		targets[id] = m[0]
+	}
+	for _, m := range regexp.MustCompile(`(?m)^#+ (.+)$`).FindAllStringSubmatchIndex(text, -1) {
+		if !hidden[m[0]] {
+			targets[slug(text[m[2]:m[3]])] = m[0]
+		}
+	}
 	for a := range anchors {
-		if !strings.Contains(string(readme), `<a id="`+a+`"></a>`) {
+		if !strings.Contains(text, `<a id="`+a+`"></a>`) {
 			t.Errorf("README.md has no anchor %q", a)
 		}
 	}
+	for _, m := range regexp.MustCompile(`\]\(#([^)]+)\)`).FindAllStringSubmatch(text, -1) {
+		if _, ok := targets[m[1]]; !ok {
+			t.Errorf("README.md links to #%s, which is not a heading or anchor outside <details>", m[1])
+		}
+	}
+}
+
+// slug is GitHub's heading anchor: lower case, punctuation dropped, spaces
+// to hyphens.
+func slug(h string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(h)) {
+		switch {
+		case r == ' ':
+			b.WriteRune('-')
+		case r == '-' || r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

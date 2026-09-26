@@ -1,15 +1,82 @@
 # google-photos-takeout
 
+[![ci](https://github.com/asmodeoux/google-photos-takeout/actions/workflows/ci.yml/badge.svg)](https://github.com/asmodeoux/google-photos-takeout/actions/workflows/ci.yml) [![release](https://img.shields.io/github/v/release/asmodeoux/google-photos-takeout)](https://github.com/asmodeoux/google-photos-takeout/releases/latest)
+
 Turn a Google Photos Takeout into a photo library with the right dates, places, Live Photos and albums, and a report that proves every file in the zips was accounted for.
 
-Google's export splits each photo from its date and location: the date lives in a JSON file next to the photo, often under a truncated name, sometimes in another zip. Import the zips as they are and years of photos land on the day you downloaded them. This tool reads the zips directly, finds each photo's JSON, writes the date, time zone and GPS into the file itself, rebuilds Live Photos, and sorts everything into year folders.
+Google's export splits each photo from its date and location: the date lives in a JSON file next to the photo, often under a truncated name, sometimes in another zip. Import the zips as they are and years of photos land on the day you downloaded them. This tool reads the zips directly, finds each photo's JSON, writes the date, time zone and GPS into the file itself, rebuilds Live Photos, and sorts everything into year folders. Other Takeout tools ([GooglePhotosTakeoutHelper](https://github.com/TheLastGimbus/GooglePhotosTakeoutHelper), [gpth-rs](https://github.com/jl1nie/gpth-rs), [immich-go](https://github.com/simulot/immich-go), [takeoutfix](https://github.com/vchilikov/takeoutfix)) each solve part of this; this one is for people who want the files to open correctly in Apple Photos and other apps, including video time zones and Live Photos, with a report that accounts for every file.
 
 Works on **macOS, Windows and Linux**. Importing straight into Apple Photos needs a Mac; the library it builds opens correctly anywhere that reads photo metadata.
 
-- [How it works in eight steps](#tutorial)
+- [Quick start](#quick-start) · [What you get](#what-you-get) · [Step by step](#tutorial)
 - [Install](#2-install): [macOS](#macos) · [Windows](#windows) · [Linux](#linux)
 - [Commands](#commands) · [Flags](#flags) · [Exit codes](#exit-codes) · [report.json](#reportjson-fields)
 - [Windows notes](#what-is-different-on-windows) · [Troubleshooting](#troubleshooting) · [FAQ](#faq)
+
+## Quick start
+
+Download every part of your export from [takeout.google.com](https://takeout.google.com) into one folder, and do not unzip them ([how](#1-export-from-google)). Then open the block for your system.
+
+<details>
+<summary><b>macOS</b>: Homebrew, then the release download</summary>
+
+```sh
+brew install exiftool ffmpeg
+# download takeout-<version>-darwin-arm64.tar.gz from the latest release and extract it, then in that folder:
+xattr -d com.apple.quarantine takeout
+./takeout doctor
+./takeout check --archives ~/Downloads/Takeout
+./takeout run --sample 200 --archives ~/Downloads/Takeout --results results-try --default-tz Europe/Berlin
+```
+</details>
+
+<details>
+<summary><b>Windows</b>: winget, then the release download</summary>
+
+```powershell
+winget install --id OliverBetz.ExifTool -e
+winget install --id Gyan.FFmpeg -e
+# open a new PowerShell window, download takeout-<version>-windows-amd64.zip from the latest release, extract it, then in that folder:
+Unblock-File .\takeout.exe
+.\takeout.exe doctor
+.\takeout.exe check --archives "D:\Takeout"
+.\takeout.exe run --sample 200 --archives "D:\Takeout" --results results-try --default-tz Europe/Berlin
+```
+</details>
+
+<details>
+<summary><b>Linux</b>: your package manager, then the release download</summary>
+
+```sh
+sudo apt install libimage-exiftool-perl ffmpeg
+# download takeout-<version>-linux-amd64.tar.gz from the latest release and extract it, then in that folder:
+./takeout doctor
+./takeout check --archives ~/Takeout
+./takeout run --sample 200 --archives ~/Takeout --results results-try --default-tz Europe/Berlin
+```
+</details>
+
+Releases are on the [latest release](https://github.com/asmodeoux/google-photos-takeout/releases/latest) page. `--default-tz` is the zone where most photos were taken, as an [IANA name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones); find yours with `ls /usr/share/zoneinfo` (macOS, Linux) or `tzutil /l` (Windows). `check` reads the zips, writes nothing, and prints the plan. This is its output for the synthetic export in this repository:
+
+```
+parts 2  missing none  exports [20240101T000000Z]
+filesystem apfs  free 295 GB  need about 0 GB
+
+Review
+  media in zips     91
+  sidecars          74
+  unique files      86
+  dated             79
+  unknown date      4
+  not importable    2
+  with GPS          11
+  without GPS       72
+  live photo pairs  5
+  placeholders      1
+  ...
+```
+
+Look at a few files in `results-try`, then drop `--sample 200 --results results-try` to build the whole library. The [step-by-step guide](#tutorial) covers each stage.
 
 ## What you get
 
@@ -43,7 +110,9 @@ You need **ExifTool**, which writes the tags. **ffmpeg** is optional: without it
 
 Each release has one archive per system (`takeout-<version>-<system>-<cpu>`) and `SHA256SUMS.txt` to check them. The binaries are not code-signed yet, so the first run needs one extra step, shown below.
 
-#### macOS
+<a id="macos"></a>
+<details>
+<summary><b>macOS</b>: <code>brew install exiftool ffmpeg</code>, then the release download</summary>
 
 ```sh
 brew install exiftool ffmpeg
@@ -68,8 +137,11 @@ cd google-photos-takeout
 ./takeout.sh doctor
 ```
 </details>
+</details>
 
-#### Windows
+<a id="windows"></a>
+<details>
+<summary><b>Windows</b>: <code>winget</code> for ExifTool and ffmpeg, then the release download</summary>
 
 In PowerShell:
 
@@ -85,9 +157,7 @@ Unblock-File .\takeout.exe
 .\takeout.exe doctor
 ```
 
-<a id="smartscreen"></a>If SmartScreen says "Windows protected your PC", choose **More info**, then **Run anyway**: the file is not code-signed yet. `Get-FileHash .\takeout-<version>-windows-amd64.zip` should match its line in `SHA256SUMS.txt`.
-
-Use `.\takeout.exe` wherever this guide says `./takeout.sh`.
+If SmartScreen says "Windows protected your PC", see [SmartScreen](#smartscreen). Use `.\takeout.exe` wherever this guide says `./takeout.sh`.
 
 <details>
 <summary>Build from source instead</summary>
@@ -112,8 +182,11 @@ PowerShell is the tested shell. From Git Bash or MSYS2, run `./takeout.exe` or `
 
 WSL2 runs the Linux build. It works, but reading zips from `/mnt/c` or `/mnt/d` is several times slower than native Windows, and Windows creation dates are not set. Prefer the native `takeout.exe`.
 </details>
+</details>
 
-#### Linux
+<a id="linux"></a>
+<details>
+<summary><b>Linux</b>: ExifTool and ffmpeg from your packages, then the release download</summary>
 
 ```sh
 sudo apt install libimage-exiftool-perl ffmpeg   # or your distribution's packages
@@ -130,6 +203,7 @@ git clone https://github.com/asmodeoux/google-photos-takeout.git
 cd google-photos-takeout
 ./takeout.sh doctor
 ```
+</details>
 </details>
 
 ### 3. Check this computer
@@ -157,37 +231,23 @@ A failed check prints what it found, the fix for your system, and the section of
 ./takeout.sh check                                   # zips in archives/
 ./takeout.sh check --archives "/Volumes/Disk/Takeout"
 ```
+
+<details>
+<summary>Windows</summary>
+
 ```powershell
 .\takeout.cmd check --archives "D:\Takeout"
 ```
+</details>
 
-This is the output for the synthetic test export in this repository:
-
-```
-parts 2  missing []  exports [20240101T000000Z]
-filesystem apfs  free 296 GB  need about 0 GB
-
-Review
-  media in zips     72
-  sidecars          61
-  unique files      70
-  dated             66
-  unknown date      4
-  with GPS          11
-  without GPS       59
-  live photo pairs  5
-  ...
-Next: ./takeout.sh run --default-tz Area/City
-```
-
-A missing zip part stops here with the part numbers, before anything is copied.
+It prints the plan shown in the [Quick start](#quick-start) and ends with the `run` command to use next. A missing zip part stops here with the part numbers, before anything is copied.
 
 ### 5. Try a small run
 
 Pick the time zone where most photos were taken, as an [IANA name](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) such as `America/New_York` or `Europe/Berlin`. It is used only for files with no GPS and no camera offset.
 
 ```sh
-./takeout.sh run --sample 50 --results results-try --default-tz Europe/Berlin
+./takeout.sh run --sample 200 --results results-try --default-tz Europe/Berlin
 ```
 
 Open a few files from `results-try/<year>` and check the dates and places. Delete `results-try` when you are done.
@@ -197,11 +257,16 @@ Open a few files from `results-try/<year>` and check the dates and places. Delet
 ```sh
 ./takeout.sh run --default-tz Europe/Berlin
 ```
+
+<details>
+<summary>Windows</summary>
+
 ```powershell
 .\takeout.cmd run --archives "D:\Takeout" --results "E:\Photos library" --default-tz Europe/Berlin
 ```
+</details>
 
-A large export takes hours; the computer is kept awake while it runs. Stop it with Ctrl+C and run the same command again to resume. Finished files are not copied twice.
+A large export takes hours; the computer is kept awake while it runs. `./takeout.sh status` in another window shows where it is. Stop it with Ctrl+C and run the same command again to resume. Finished files are not copied twice.
 
 ### 7. Import
 
@@ -229,7 +294,7 @@ Import `results/<year>` folders and `results/unknown`. **Do not import `results/
 | Check this computer | `.\takeout.cmd doctor` | `./takeout.sh doctor` |
 | Read the zips, print the plan | `.\takeout.cmd check` | `./takeout.sh check` |
 | Build the library (resumes) | `.\takeout.cmd run` | `./takeout.sh run` |
-| One line about the last run | `.\takeout.cmd status` | `./takeout.sh status` |
+| Where the run is, or how the last one ended | `.\takeout.cmd status` | `./takeout.sh status` |
 | Re-check results against the report | `.\takeout.cmd verify` | `./takeout.sh verify` |
 | Extract the zips into `unzipped/` | `.\takeout.cmd unzip` | `./takeout.sh unzip` |
 | Prepare a Photos import (experimental) | not available | `./takeout import-photos` (macOS) |
@@ -237,6 +302,9 @@ Import `results/<year>` folders and `results/unknown`. **Do not import `results/
 With a release download, use `.\takeout.exe` or `./takeout`; when built from source, `.\takeout.cmd` or `./takeout.sh`. `takeout <command> -h` lists the flags each command takes.
 
 ## Flags
+
+<details>
+<summary>Every flag, and the commands that take it</summary>
 
 | Flag | Commands | Meaning |
 |---|---|---|
@@ -250,11 +318,16 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 | `--include-trash` | check, run | Include the Trash folder. |
 | `--keep-unzipped` | run | Also extract the zips into `unzipped/`. |
 | `--no-keep-awake` | run, unzip | Let the computer sleep during the run. |
+| `--exiftool-timeout DURATION` | run, verify | Longest ExifTool may take on a small file before it is restarted. Default `2m`; larger files get longer. |
 | `--exiftool PATH`, `--ffmpeg PATH` | several | Use these programs instead of the ones on PATH. |
 | `--progress auto\|tty\|plain`, `--quiet` | check, run, unzip | Progress output. |
 | `--library PATH`, `--confirm-icloud` | import-photos | Photos library to import into; allow the iCloud one. |
+</details>
 
 ## Exit codes
+
+<details>
+<summary>5 exit codes (0, 2, 3, 4, 130) and what to do for each</summary>
 
 | Code | Meaning | What to do |
 |---|---|---|
@@ -263,8 +336,12 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 | 3 | Some files from the zips are not in the library, or a check of the library failed. | See `failed_files` in `report.json` (a damaged zip part must be downloaded again) or the message, fix it, and run again. |
 | 4 | Finished, but some files did not take tags. | The library is usable. See `tag_error_files` in `report.json`. |
 | 130 | Interrupted. | Run the same command; it resumes. |
+</details>
 
 ## report.json fields
+
+<details>
+<summary>Every field in <code>results/.takeout/report.json</code></summary>
 
 | Field | Meaning |
 |---|---|
@@ -288,8 +365,12 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 | `retries` | Renames and tag writes that waited for another program to release a file. |
 | `seconds`, `files_per_second` | Time per phase, and tagging speed. |
 | `errors` | Everything else worth reading. |
+</details>
 
 ## What is different on Windows
+
+<details>
+<summary>Album folders, file names, creation dates, long paths and importing</summary>
 
 | | Windows | macOS |
 |---|---|---|
@@ -298,8 +379,11 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 | Creation date in Explorer / Finder | Set to the photo's date. | Set to the photo's date. |
 | Long and non-English paths | Supported with ExifTool 13.07 or newer. | Supported. |
 | Import into Apple Photos | Copy the results to a Mac. | File > Import in Photos. |
+</details>
 
 ## Troubleshooting
+
+Error messages end with `See: README.md#<section>`, which links to one of these.
 
 <a id="zips"></a><a id="archives"></a>
 **No Takeout zip files found.** The message shows the folder that was searched. Put the `takeout-*.zip` files there, or pass the folder: `--archives "D:\Takeout"`. Do not unzip them.
@@ -309,6 +393,9 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 
 <a id="exiftool"></a><a id="exiftool-windows"></a>
 **ExifTool not found.** Install it (see [Install](#2-install)) and open a new terminal window. On Windows, `winget` installs it on PATH. If you downloaded the zip from exiftool.org instead, rename `exiftool(-k).exe` to `exiftool.exe` and keep the `exiftool_files` folder next to it; the `(-k)` build waits for a key press and cannot be used. ExifTool 13.07 or newer is required on Windows.
+
+<a id="smartscreen"></a>
+**"Windows protected your PC".** Choose **More info**, then **Run anyway**: the file is not code-signed yet. `Get-FileHash .\takeout-<version>-windows-amd64.zip` should match its line in `SHA256SUMS.txt`.
 
 <a id="execution-policy"></a>
 **"running scripts is disabled on this system".** Use `.\takeout.cmd`, not `.\takeout.ps1`. The `.cmd` file runs the script without changing your execution policy.
@@ -343,30 +430,58 @@ With a release download, use `.\takeout.exe` or `./takeout`; when built from sou
 <a id="exit-3"></a>
 **Exit 3.** Files from the zips did not reach the library: `failed_files` in `report.json` lists each one with the reason, usually a damaged zip part ("checksum error"). Download that part again from takeout.google.com, replace it in the archives folder, and run the same command; finished files are kept. Exit 3 with `album_errors` means some album copies could not be made, often because the disk is full; the library itself is complete, and the next run makes them. From `verify`, exit 3 also means a library file or album copy is missing, or a photo is in the wrong year folder.
 
+<a id="exit-4"></a>
 **Exit 4.** Some files did not take tags. They are still in the library with their original metadata. `tag_error_files` in `report.json` lists them with ExifTool's message.
 
+<a id="wrong-day"></a>
 **A video shows the wrong day.** Check that `--default-tz` is the zone where it was filmed. If it still happens, open a bug with the report counts, not the video.
 
 ## FAQ
 
-**Does it upload anything?** takeout itself never sends anything over the network: it reads your zips and writes files on your disk. The one exception you can ask for is Apple Photos. `import-photos` (macOS) is meant to import the library into a Photos library you name. If that is your iCloud-synced system library, Photos then uploads what was imported to iCloud, so the command refuses it unless you add `--confirm-icloud`. A separate library you create with Option-click in Photos is never uploaded. Today `import-photos` only checks the library and prints the AppleScript it will run; it does not import yet.
+<details>
+<summary><b>Does it upload anything?</b></summary>
 
-**Can I run it again?** Yes. It resumes from the journal in `results/.takeout/` and never overwrites a finished file.
+takeout itself never sends anything over the network: it reads your zips and writes files on your disk. The one exception you can ask for is Apple Photos. `import-photos` (macOS) is meant to import the library into a Photos library you name. If that is your iCloud-synced system library, Photos then uploads what was imported to iCloud, so the command refuses it unless you add `--confirm-icloud`. A separate library you create with Option-click in Photos is never uploaded. Today `import-photos` only checks the library and prints the AppleScript it will run; it does not import yet.
+</details>
 
-**Why are some photos in `unknown`?** Neither the JSON, the file, nor its name had a date that could be trusted. They are still there; set their dates in your photo app.
+<details>
+<summary><b>Can I run it again?</b></summary>
 
-**What about edited copies (`-edited.jpg`)?** They are kept as separate files, dated from the original's JSON.
+Yes. It resumes from the journal in `results/.takeout/` and never overwrites a finished file.
+</details>
 
-**Motion Photos from a Pixel?** A `.MP` video next to its `.MP.jpg` becomes a Live Photo pair. A JPEG with a video embedded inside stays a JPEG, counted in `motion_photos`.
+<details>
+<summary><b>Why are some photos in <code>unknown</code>?</b></summary>
 
-**RAW files?** DNG, CR2, NEF, ARW and other TIFF-based RAW files get dates and GPS like any photo. Canon CR3 files are placed with their camera date; a CR3 next to a JPEG of the same name keeps that name, so Photos pairs them.
+Neither the JSON, the file, nor its name had a date that could be trusted. They are still there; set their dates in your photo app.
+</details>
 
-**Photos from before 1970?** A date you set in Google Photos on an old scan is kept, back to 1800.
+<details>
+<summary><b>What about edited copies (<code>-edited.jpg</code>)?</b></summary>
 
-## Why this tool
+They are kept as separate files, dated from the original's JSON.
+</details>
 
-[GooglePhotosTakeoutHelper](https://github.com/TheLastGimbus/GooglePhotosTakeoutHelper), [gpth-rs](https://github.com/jl1nie/gpth-rs), [immich-go](https://github.com/simulot/immich-go) and [takeoutfix](https://github.com/vchilikov/takeoutfix) each solve part of a Takeout. This tool is for people who want the files to open correctly in Apple Photos and other apps, including video time zones and Live Photos, on any of the three systems, with a report that accounts for every file. The test suite builds a synthetic Takeout with the layouts reported in GooglePhotosTakeoutHelper's issue tracker (truncated sidecar names, `.metadata.json`, case-mismatched names, localized folders, `._` files, Pixel `.MP` videos, RAW) and runs it end to end on Windows, macOS and Linux on every change.
+<details>
+<summary><b>Motion Photos from a Pixel?</b></summary>
 
-Sidecar name rules follow GooglePhotosTakeoutHelper and the [51-character truncation notes](https://gist.github.com/AkuEgor/41f758cdf305d6c97608cd5f06a140fc). Filename date patterns and localized folder names follow gpth-rs. The code is new; those projects are not vendored. An agent can run the whole process from [AGENTS.md](AGENTS.md).
+A `.MP` video next to its `.MP.jpg` becomes a Live Photo pair. A JPEG with a video embedded inside stays a JPEG, counted in `motion_photos`.
+</details>
+
+<details>
+<summary><b>RAW files?</b></summary>
+
+DNG, CR2, NEF, ARW and other TIFF-based RAW files get dates and GPS like any photo. Canon CR3 files are placed with their camera date; a CR3 next to a JPEG of the same name keeps that name, so Photos pairs them.
+</details>
+
+<details>
+<summary><b>Photos from before 1970?</b></summary>
+
+A date you set in Google Photos on an old scan is kept, back to 1800.
+</details>
+
+## Credits
+
+The test suite builds a synthetic Takeout with the layouts reported in GooglePhotosTakeoutHelper's issue tracker (truncated sidecar names, `.metadata.json`, case-mismatched names, localized folders, `._` files, Pixel `.MP` videos, RAW) and runs it end to end on Windows, macOS and Linux on every change. Sidecar name rules follow GooglePhotosTakeoutHelper and the [51-character truncation notes](https://gist.github.com/AkuEgor/41f758cdf305d6c97608cd5f06a140fc). Filename date patterns and localized folder names follow gpth-rs. The code is new; those projects are not vendored. An agent can run the whole process from [AGENTS.md](AGENTS.md).
 
 Do not attach photos, videos or GPS coordinates to a bug report. See [SECURITY.md](SECURITY.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
