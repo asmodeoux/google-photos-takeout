@@ -23,6 +23,19 @@ func (c *Client) ReadJSON(paths, tags []string, numeric bool, id int) ([]map[str
 	if len(paths) == 0 {
 		return nil, nil
 	}
+	args, err := readArgs(paths, tags, numeric)
+	if err != nil {
+		return nil, err
+	}
+	r, err := c.Run(args, id)
+	if err != nil {
+		return nil, err
+	}
+	return parseRows(r.Out)
+}
+
+// readArgs builds a -json read of paths. Paths travel as absolute paths.
+func readArgs(paths, tags []string, numeric bool) ([]string, error) {
 	args := []string{"-api", "QuickTimeUTC=1", "-json"}
 	if numeric {
 		args = append(args, "-n")
@@ -37,11 +50,12 @@ func (c *Client) ReadJSON(paths, tags []string, numeric bool, id int) ([]map[str
 		}
 		args = append(args, abs)
 	}
-	r, err := c.Run(args, id)
-	if err != nil {
-		return nil, err
-	}
-	out := strings.TrimSpace(r.Out)
+	return args, nil
+}
+
+// parseRows decodes the -json output of one read.
+func parseRows(out string) ([]map[string]any, error) {
+	out = strings.TrimSpace(out)
 	if out == "" {
 		return nil, nil
 	}

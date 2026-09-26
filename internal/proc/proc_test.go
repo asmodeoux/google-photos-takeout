@@ -67,3 +67,17 @@ func waitGone(t *testing.T, pid int) {
 	killPid(pid)
 	t.Fatalf("process %d outlived its parent", pid)
 }
+
+// KillTree must end a grandchild even after its parent has exited, the way
+// perl.exe outlives a crashed exiftool.exe launcher.
+func TestKillTreeEndsOrphanedGrandchild(t *testing.T) {
+	started := time.Now()
+	cmd, grandchild := startHelper(t)
+	cmd.Process.Kill()
+	cmd.Wait()
+	if !alive(grandchild) {
+		t.Skip("the system ended the grandchild with its parent")
+	}
+	KillTree(cmd, started)
+	waitGone(t, grandchild)
+}

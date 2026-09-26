@@ -5,6 +5,7 @@ package proc
 import (
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // Isolate puts cmd in its own process group, so Ctrl+C in the terminal reaches
@@ -24,6 +25,10 @@ func Kill(cmd *exec.Cmd) {
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	_ = cmd.Process.Kill()
 }
+
+// KillTree stops cmd and everything it started. On Unix the process group
+// holds them all, even after cmd itself has exited.
+func KillTree(cmd *exec.Cmd, started time.Time) { Kill(cmd) }
 
 // KillTreeOnExit is a no-op on Unix: children in their own group see stdin
 // close when takeout exits, and ffmpeg is stopped through its context.
