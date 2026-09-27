@@ -34,3 +34,6 @@ unzipped/*
 *_original
 *_exiftool_tmp
 results/.takeout/
+
+# Local benchmark runs on a real export: reports name personal files.
+benchmarks/

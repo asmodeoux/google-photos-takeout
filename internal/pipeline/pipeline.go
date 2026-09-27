@@ -63,7 +63,10 @@ type Options struct {
 	Exiftool           string
 	FFmpeg             string
 	FailAfter          int
-	Names              string // auto, apple, portable
+	// ExiftoolTimeout is the shortest time a single ExifTool command may
+	// take; big files get longer. 0 means the default of 2 minutes.
+	ExiftoolTimeout time.Duration
+	Names           string // auto, apple, portable
 	// Launcher is how the user starts takeout, for commands in fix lines.
 	Launcher string
 	// Force is closed on a second Ctrl+C: stop ExifTool and ffmpeg at once
@@ -75,11 +78,14 @@ type Options struct {
 
 // Report is takeout-report.json.
 type Report struct {
-	SchemaVersion  int            `json:"schema_version"`
-	Media          int            `json:"media"`
-	Sidecars       int            `json:"sidecars"`
-	Library        int            `json:"library"`
-	Unknown        int            `json:"unknown"`
+	SchemaVersion int `json:"schema_version"`
+	Media         int `json:"media"`
+	Sidecars      int `json:"sidecars"`
+	Library       int `json:"library"`
+	Unknown       int `json:"unknown"`
+	// NotImportable counts documents and unconvertible videos, which go to
+	// not-importable/ and are in neither library nor unknown.
+	NotImportable  int            `json:"not_importable"`
 	Placeholders   int            `json:"placeholders"`
 	LivePairs      int            `json:"live_pairs"`
 	IDCopied       int            `json:"identifier_copied"`
@@ -119,10 +125,19 @@ type Report struct {
 	Failed      int          `json:"failed"`
 	FailedFiles []FailedFile `json:"failed_files,omitempty"`
 	Retries     Retries      `json:"retries"`
+	// ReadErrors counts files whose embedded tags could not be read because
+	// ExifTool failed on them; their dates came from the sidecar or name.
+	ReadErrors     int      `json:"read_errors"`
+	ReadErrorFiles []string `json:"read_error_files,omitempty"`
+	// ExiftoolLog is the log of ExifTool restarts and timeouts, when any happened.
+	ExiftoolLog string `json:"exiftool_log,omitempty"`
 	// Seconds is the wall time of each phase. FilesPerSecond is for tags.
 	Seconds        map[string]float64 `json:"seconds,omitempty"`
 	FilesPerSecond float64            `json:"files_per_second,omitempty"`
 	Import         string             `json:"import"`
+	// LegacyNonMedia lists non-media files an earlier version placed in the
+	// library folders; a rerun leaves them where they are.
+	LegacyNonMedia []string `json:"legacy_non_media,omitempty"`
 }
 
 // TagErrorFile is one file whose tags could not be written or read back.
@@ -137,14 +152,21 @@ type FailedFile struct {
 	Error string `json:"error"`
 }
 
-// maxTagErrorFiles bounds tag_error_files and failed_files in the report.
+// maxTagErrorFiles bounds tag_error_files, failed_files and the list of
+// legacy non-media files in the report.
 const maxTagErrorFiles = 40
+
+// maxReadErrorFiles bounds read_error_files in the report.
+const maxReadErrorFiles = 20
 
 // Retries counts waits for another process, usually antivirus or the search
 // indexer, to let go of a file.
 type Retries struct {
 	Rename int64 `json:"rename"`
 	Tag    int64 `json:"tag"`
+	// ExiftoolRestarts counts ExifTool processes started to replace ones that
+	// crashed or hung.
+	ExiftoolRestarts int64 `json:"exiftool_restarts"`
 }
 
 // tagRetries counts ExifTool writes retried after a file-lock error.
@@ -207,24 +229,39 @@ type group struct {
 	// album copies still need space.
 	albumsOnly bool
 	skip       bool
+	// readErr is why ExifTool could not read the file's own tags. Its tags
+	// are then not written, so the camera's date is never overwritten.
+	readErr string
 }
 
-// Run executes check, unzip, or the full organize.
+// Run executes check, unzip, or the full organize. A full run writes its
+// phase and count to results/.takeout/progress.json for "takeout status",
+// and removes it when the run finishes; a run that stops early keeps it.
 func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if opt.Stdout == nil {
 		opt.Stdout = os.Stdout
 	}
+	pr := progress.New(opt.Stdout, opt.Progress, opt.Quiet)
+	if opt.DryRun || opt.UnzipOnly || opt.Results == "" {
+		return run(ctx, opt, pr)
+	}
+	pr.SetStateFile(filepath.Join(opt.Results, ".takeout", "progress.json"))
+	code, rep, err := run(ctx, opt, pr)
+	pr.Finish(code == ExitOK || code == ExitReconcile || code == ExitTagErrors)
+	return code, rep, err
+}
+
+func run(ctx context.Context, opt Options, pr *progress.Reporter) (int, Report, error) {
 	if opt.Albums == "" {
 		opt.Albums = "clone"
 	}
 	if opt.Now.IsZero() {
 		opt.Now = time.Now()
 	}
-	rep := Report{SchemaVersion: 1, Years: map[string]int{}, Sources: map[string]int{}, TZ: map[string]int{}, Formats: map[string]int{}, Import: importText()}
+	rep := Report{SchemaVersion: 2, Years: map[string]int{}, Sources: map[string]int{}, TZ: map[string]int{}, Formats: map[string]int{}, Import: importText()}
 	if opt.Launcher == "" {
 		opt.Launcher = DefaultLauncher(runtime.GOOS)
 	}
-	pr := progress.New(opt.Stdout, opt.Progress, opt.Quiet)
 	if err := checkRoot("archives", opt.Archives); err != nil {
 		return ExitPreflight, rep, err
 	}
@@ -238,6 +275,16 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 	if len(zips) == 0 {
 		return ExitPreflight, rep, errNoZips(opt.Archives, opt.Launcher, runtime.GOOS)
+	}
+	// A run holds the results folder from the start, so a second run stops
+	// at once instead of after minutes of hashing, and never writes the
+	// first one's progress file.
+	if !opt.DryRun && !opt.UnzipOnly && opt.Results != "" {
+		release, err := lockResults(opt)
+		if err != nil {
+			return ExitPreflight, rep, err
+		}
+		defer release()
 	}
 	timer := &phaseTimer{}
 	renameStart, tagStart := media.RenameRetries.Load(), tagRetries.Load()
@@ -305,7 +352,10 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 	defer closeZips(readers)
 
-	sidecars := map[string]*scInfo{}
+	// Sidecars by exact name, then by NFC name and by folded case; the last
+	// two count only when one sidecar has that name.
+	sidecarsExact := map[string]*scInfo{}
+	sidecars := map[string][]*scInfo{}
 	// sidecarsFolded finds a sidecar whose name differs only in case. It is
 	// used only when exactly one sidecar has that name.
 	sidecarsFolded := map[string][]*scInfo{}
@@ -333,7 +383,9 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 				skippedJSON = append(skippedJSON, e)
 				continue
 			}
-			sidecars[match.Key(e.RelFolder, e.Name)] = sc
+			sidecarsExact[match.ExactKey(e.RelFolder, e.Name)] = sc
+			key := match.Key(e.RelFolder, e.Name)
+			sidecars[key] = append(sidecars[key], sc)
 			fold := match.FoldKey(e.RelFolder, e.Name)
 			sidecarsFolded[fold] = append(sidecarsFolded[fold], sc)
 			skippedJSON = append(skippedJSON, e)
@@ -364,13 +416,21 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		}
 		cands := match.Candidates(m.Name)
 		for _, c := range cands {
-			if sc, ok := sidecars[match.Key(m.RelFolder, c)]; ok {
+			if sc, ok := sidecarsExact[match.ExactKey(m.RelFolder, c)]; ok {
 				m.sc = sc
-				if !match.TitleAgrees(m.Name, sc.Title) {
-					rep.Errors = append(rep.Errors, "title mismatch "+m.Name+" vs "+sc.Title)
-				}
 				break
 			}
+		}
+		if m.sc == nil {
+			for _, c := range cands {
+				if found := sidecars[match.Key(m.RelFolder, c)]; len(found) == 1 {
+					m.sc = found[0]
+					break
+				}
+			}
+		}
+		if m.sc != nil && !match.TitleAgrees(m.Name, m.sc.Title) {
+			rep.Errors = append(rep.Errors, "title mismatch "+m.Name+" vs "+m.sc.Title)
 		}
 		if m.sc == nil {
 			for _, c := range cands {
@@ -384,7 +444,7 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 
 	groups := groupBy(items)
 	phase("duplicates", "confirm duplicates")
-	groups, err = confirmDuplicates(ctx, readers, groups)
+	groups, err = confirmDuplicates(ctx, readers, groups, func(done, total int) { pr.Tick(done, total, "") })
 	if err != nil {
 		return ExitInterrupt, rep, err
 	}
@@ -412,18 +472,6 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if err != nil {
 		return ExitPreflight, rep, err
 	}
-	release, err := state.Lock(filepath.Join(opt.Results, ".takeout"))
-	if errors.Is(err, state.ErrNoLocking) {
-		fmt.Fprintf(opt.Stdout, "note: %v. Do not start a second takeout on %s while this one runs.\n", err, opt.Results)
-		err = nil
-	}
-	if err != nil {
-		if errors.Is(err, state.ErrLocked) {
-			err = errLocked(err)
-		}
-		return ExitPreflight, rep, err
-	}
-	defer release()
 	journal, err := state.OpenJournal(filepath.Join(opt.Results, ".takeout", "state.jsonl"))
 	if err != nil {
 		return ExitPreflight, rep, err
@@ -500,13 +548,21 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	}
 
 	const tagWorkers = 4
-	clients, err := startClients(opt.Exiftool, tagWorkers)
+	events := newEventLog(opt.Results)
+	pool, err := startPool(opt, tagWorkers, events)
 	if err != nil {
 		return ExitPreflight, rep, err
 	}
-	defer closeClients(clients)
+	defer pool.Close()
+	defer killOnForce(opt.Force, pool)()
 
-	readEmbedded(clients, opt, groups, &rep)
+	phase("read", "read tags")
+	if err := readEmbedded(ctx, pool, opt, groups, &rep); err != nil {
+		if ctx.Err() != nil {
+			return ExitInterrupt, rep, nil
+		}
+		return ExitPreflight, rep, stopError(err, pool.Path(), opt.Results)
+	}
 	if ctx.Err() != nil {
 		return ExitInterrupt, rep, nil
 	}
@@ -523,15 +579,10 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 		}
 	}
 	phase("tags", "tags")
-	runners := make([]tagRunner, len(clients))
-	for i, c := range clients {
-		runners[i] = c
+	stopped, err := tagAll(ctx, opt.Force, tagGrace, tagWorkers, pool, pool.Kill, groups, opt.Results, journal, &rep, times, pr)
+	if err != nil {
+		return ExitPreflight, rep, stopError(err, pool.Path(), opt.Results)
 	}
-	stopped := tagAll(ctx, opt.Force, tagGrace, runners, func() {
-		for _, c := range clients {
-			c.Kill()
-		}
-	}, groups, opt.Results, journal, &rep, times, pr)
 	if stopped {
 		return ExitInterrupt, rep, nil
 	}
@@ -593,8 +644,13 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if ctx.Err() != nil {
 		return ExitInterrupt, rep, nil
 	}
-	timer.next("verify")
-	verifyTags(clients, opt.Results, groups, &rep)
+	phase("verify", "verify")
+	if err := verifyTags(ctx, pool, opt.Results, groups, &rep); err != nil {
+		if ctx.Err() != nil {
+			return ExitInterrupt, rep, nil
+		}
+		return ExitPreflight, rep, stopError(err, pool.Path(), opt.Results)
+	}
 	timer.next("")
 	rep.Seconds = timer.secs
 	if s := rep.Seconds["tags"]; s > 0 {
@@ -609,7 +665,9 @@ func Run(ctx context.Context, opt Options) (int, Report, error) {
 	if len(rep.TagErrorFiles) > maxTagErrorFiles {
 		rep.TagErrorFiles = rep.TagErrorFiles[:maxTagErrorFiles]
 	}
-	rep.Retries = Retries{Rename: media.RenameRetries.Load() - renameStart, Tag: tagRetries.Load() - tagStart}
+	rep.Retries = Retries{Rename: media.RenameRetries.Load() - renameStart, Tag: tagRetries.Load() - tagStart,
+		ExiftoolRestarts: int64(pool.Restarts())}
+	rep.ExiftoolLog = events.written()
 	if runtime.GOOS == "windows" && rep.Retries.Rename+rep.Retries.Tag > 20 {
 		fmt.Fprintln(opt.Stdout, defenderHint(opt.Results))
 	}
@@ -690,8 +748,16 @@ func groupBy(media []member) []group {
 // so they are the same on every run: the subgroup with the smallest hash keeps
 // the group id, the others add a short hash. An unreadable member gets its own
 // group, and extraction reports the error.
-func confirmDuplicates(ctx context.Context, readers map[string]*zipSet, groups []group) ([]group, error) {
+func confirmDuplicates(ctx context.Context, readers map[string]*zipSet, groups []group, tick func(done, total int)) ([]group, error) {
 	out := make([]group, 0, len(groups))
+	// Progress counts files, not groups: one group with many album copies
+	// would otherwise sit still for a long time.
+	total, done := 0, 0
+	for _, g := range groups {
+		if len(g.members) >= 2 {
+			total += len(g.members)
+		}
+	}
 	for _, g := range groups {
 		if len(g.members) < 2 {
 			out = append(out, g)
@@ -704,6 +770,10 @@ func confirmDuplicates(ctx context.Context, readers map[string]*zipSet, groups [
 		var order []string
 		for _, m := range g.members {
 			key, err := hashMember(readers, m.Entry)
+			done++
+			if tick != nil {
+				tick(done, total)
+			}
 			if err != nil {
 				sum := sha256.Sum256([]byte("unreadable:" + m.ZipPath + "\x00" + m.EntryName))
 				key = "~" + hex.EncodeToString(sum[:])
@@ -1175,8 +1245,10 @@ func cleanPartial(dir string) {
 	}
 }
 
-func readEmbedded(clients []*exiftool.Client, opt Options, groups []group, rep *Report) {
-	// A file ExifTool cannot read is treated as having no embedded tags.
+// readEmbedded reads the tags already in each staged file. A file ExifTool
+// cannot read is treated as having no embedded tags; one it failed on is also
+// counted in read_errors. The error is a pool that gave up.
+func readEmbedded(ctx context.Context, pool *exiftool.Pool, opt Options, groups []group, rep *Report) error {
 	var paths []string
 	index := map[string]int{}
 	for i := range groups {
@@ -1186,11 +1258,46 @@ func readEmbedded(clients []*exiftool.Client, opt Options, groups []group, rep *
 		paths = append(paths, groups[i].staged)
 		index[exiftool.PathKey(groups[i].staged)] = i
 	}
-	byKey, errs := exiftool.ReadAll(clients, paths, []string{
-		"DateTimeOriginal", "OffsetTimeOriginal", "CreationDate", "CreateDate",
-		"GPSLatitude", "GPSLongitude", "ContentIdentifier"}, true)
-	for _, err := range errs {
-		rep.Errors = append(rep.Errors, "read embedded tags: "+err.Error())
+	tags := []string{"DateTimeOriginal", "OffsetTimeOriginal", "CreationDate", "CreateDate",
+		"GPSLatitude", "GPSLongitude", "ContentIdentifier"}
+	byKey, failed, err := pool.ReadAll(ctx, paths, tags, true)
+	if err != nil {
+		return err
+	}
+	// A failure is often passing (antivirus, a busy disk): try those once
+	// more before giving up on them.
+	if len(failed) > 0 {
+		again, still, err := pool.ReadAll(ctx, sortedFailed(failed), tags, true)
+		if err != nil {
+			return err
+		}
+		for k, row := range again {
+			byKey[k] = row
+		}
+		failed = still
+	}
+	// Files that fail twice are either bad files or a broken ExifTool; the
+	// probe tells which, so a broken install stops here (exit 2) instead of
+	// leaving every file untagged.
+	if len(failed) > 0 {
+		if err := pool.Check(); err != nil {
+			return err
+		}
+	}
+	for _, p := range sortedFailed(failed) {
+		rep.ReadErrors++
+		i, ok := index[exiftool.PathKey(p)]
+		if !ok {
+			continue
+		}
+		// Without the file's own tags, a write could replace the camera's
+		// date and offset with the sidecar's; the write is left for a rerun.
+		groups[i].readErr = failed[p]
+		if len(rep.ReadErrorFiles) < maxReadErrorFiles {
+			g := groups[i]
+			m := g.members[g.canon]
+			rep.ReadErrorFiles = append(rep.ReadErrorFiles, m.RelFolder+"/"+m.Name+": "+failed[p])
+		}
 	}
 	for key, row := range byKey {
 		i, ok := index[key]
@@ -1245,6 +1352,17 @@ func readEmbedded(clients []*exiftool.Client, opt Options, groups []group, rep *
 			}
 		}
 	}
+	return nil
+}
+
+// sortedFailed lists the paths of a ReadAll failure map in order.
+func sortedFailed(failed map[string]string) []string {
+	out := make([]string, 0, len(failed))
+	for p := range failed {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func side(g *group) dates.Sidecar {
@@ -1480,9 +1598,12 @@ func resolveDates(groups []group, opt Options) {
 	}
 }
 
-func writeTags(c tagRunner, results string, g *group, id int, times *timeLog) error {
+func writeTags(c tagRunner, results string, g *group, times *timeLog) error {
 	if !exiftool.Within(results, g.staged) && !strings.Contains(g.staged, ".takeout") {
 		return fmt.Errorf("refusing to write outside results: %s", g.staged)
+	}
+	if g.readErr != "" {
+		return fmt.Errorf("tags not written: ExifTool could not read the file's own tags first (%s); run the same command again", g.readErr)
 	}
 	var existing *time.Time
 	if g.haveEmb {
@@ -1507,7 +1628,11 @@ func writeTags(c tagRunner, results string, g *group, id int, times *timeLog) er
 	// in the library; ExifTool then refuses to write that file again.
 	_ = os.Remove(g.staged + "_exiftool_tmp")
 	needUpdate := plan.WriteDates || plan.WriteGPS || plan.SetContentID != ""
-	if err := runWrite(c, args, id+1, needUpdate, time.Sleep); err != nil {
+	var size int64
+	if st, err := os.Stat(g.staged); err == nil {
+		size = st.Size()
+	}
+	if err := runWrite(c, args, size, needUpdate, retryWait(g.staged)); err != nil {
 		return err
 	}
 	// ExifTool replaces the file, which clears the macOS creation date.
@@ -1540,19 +1665,24 @@ func (l *timeLog) set(p string, t time.Time) {
 // stopping ExifTool.
 var tagGrace = 30 * time.Second
 
-// tagAll writes tags with one worker per runner. On cancel it stops feeding
-// work, lets writes in flight finish for up to grace, then calls kill. A write
-// that succeeds after cancel is journaled; one that fails is not counted, so
-// the next run redoes it. It reports whether the run was stopped.
-func tagAll(ctx context.Context, force <-chan struct{}, grace time.Duration, runners []tagRunner, kill func(),
-	groups []group, results string, journal *state.Journal, rep *Report, times *timeLog, pr *progress.Reporter) bool {
+// tagAll writes tags with workers goroutines sharing r. On cancel it stops
+// feeding work, lets writes in flight finish for up to grace, then calls kill.
+// A write that succeeds after cancel is journaled; one that fails is not
+// counted, so the next run redoes it. It reports whether the run was stopped
+// by the user, or returns the error of an ExifTool pool that gave up; then
+// work stops the same way and nothing in flight counts as a tag error.
+func tagAll(parent context.Context, force <-chan struct{}, grace time.Duration, workers int, r tagRunner, kill func(),
+	groups []group, results string, journal *state.Journal, rep *Report, times *timeLog, pr *progress.Reporter) (bool, error) {
+	ctx, stop := context.WithCancel(parent)
+	defer stop()
 	jobs := make(chan int)
 	var wg sync.WaitGroup
 	var repMu sync.Mutex
 	var tagged int
-	for _, c := range runners {
+	var broken error
+	for range workers {
 		wg.Add(1)
-		go func(c tagRunner) {
+		go func() {
 			defer wg.Done()
 			for i := range jobs {
 				// After Ctrl+C no new write starts, even if this worker and
@@ -1561,7 +1691,16 @@ func tagAll(ctx context.Context, force <-chan struct{}, grace time.Duration, run
 					continue
 				}
 				g := &groups[i]
-				err := writeTags(c, results, g, i, times)
+				err := writeTags(r, results, g, times)
+				if errors.Is(err, exiftool.ErrPoolBroken) {
+					repMu.Lock()
+					if broken == nil {
+						broken = err
+					}
+					repMu.Unlock()
+					stop()
+					continue
+				}
 				switch {
 				case err != nil && ctx.Err() != nil:
 					// Interrupted mid-write: leave it for the next run.
@@ -1587,7 +1726,7 @@ func tagAll(ctx context.Context, force <-chan struct{}, grace time.Duration, run
 					pr.Tick(n, len(groups), g.members[g.canon].Name)
 				}
 			}
-		}(c)
+		}()
 	}
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()
@@ -1607,10 +1746,25 @@ feed:
 		}
 	}
 	close(jobs)
+	brokenErr := func() error {
+		repMu.Lock()
+		defer repMu.Unlock()
+		return broken
+	}
+	result := func() (bool, error) {
+		if err := brokenErr(); err != nil {
+			return false, err
+		}
+		return parent.Err() != nil, nil
+	}
 	select {
 	case <-done:
-		return ctx.Err() != nil
+		return result()
 	case <-ctx.Done():
+	}
+	if brokenErr() != nil {
+		<-done
+		return result()
 	}
 	// Stopping: let writes in flight finish, unless they take longer than the
 	// grace period or a second Ctrl+C says to stop now. Either way, wait for
@@ -1624,12 +1778,13 @@ feed:
 		kill()
 		<-done
 	}
-	return true
+	return result()
 }
 
-// tagRunner is the part of an ExifTool client that writeTags needs.
+// tagRunner is the part of an ExifTool pool that writeTags needs. size is
+// the size of the file being rewritten, which sets the time limit.
 type tagRunner interface {
-	Run(args []string, id int) (exiftool.Reply, error)
+	Run(args []string, size int64) (exiftool.Reply, error)
 }
 
 // writeRetryDelays are the waits before each retry of a write that failed
@@ -1638,9 +1793,9 @@ var writeRetryDelays = []time.Duration{200 * time.Millisecond, 400 * time.Millis
 
 // runWrite sends one write and retries it only for transient file-lock errors.
 // Other failures are reported at once, with ExifTool's own error text.
-func runWrite(c tagRunner, args []string, id int, needUpdate bool, sleep func(time.Duration)) error {
+func runWrite(c tagRunner, args []string, size int64, needUpdate bool, sleep func(time.Duration)) error {
 	for attempt := 0; ; attempt++ {
-		r, err := c.Run(args, id)
+		r, err := c.Run(args, size)
 		if err != nil {
 			return err
 		}
@@ -1660,6 +1815,17 @@ func runWrite(c tagRunner, args []string, id int, needUpdate bool, sleep func(ti
 			msg = msg[:500]
 		}
 		return fmt.Errorf("exiftool did not update: %s", msg)
+	}
+}
+
+// retryWait waits before a write is retried and removes the temporary copy
+// ExifTool leaves when it is killed mid-write. Pool.Run resends a crashed
+// write at once, and ExifTool refuses that resend while the copy exists, so
+// the retry that follows must find it gone.
+func retryWait(staged string) func(time.Duration) {
+	return func(d time.Duration) {
+		time.Sleep(d)
+		_ = os.Remove(staged + "_exiftool_tmp")
 	}
 }
 
@@ -1806,7 +1972,7 @@ func place(opt Options, g *group, pl *placer, rule names.Rule, journal *state.Jo
 	switch {
 	case g.placeholder:
 		dir = "placeholders"
-	case g.trueType == "webm" && strings.HasPrefix(g.outRel, "not-importable"):
+	case notImportable(g):
 		dir = "not-importable"
 	case !g.when.OK:
 		dir = "unknown"
@@ -1914,7 +2080,7 @@ func albumDirs(groups []group, rule names.Rule) (map[string]string, []string) {
 
 func albums(opt Options, groups []group, i int, dirs map[string]string, pl *placer, rule names.Rule, journal *state.Journal) error {
 	g := &groups[i]
-	if g.outRel == "" || g.placeholder || g.failErr != "" || strings.HasPrefix(g.outRel, "not-importable") {
+	if g.outRel == "" || g.placeholder || g.failErr != "" || notImportable(g) {
 		return nil
 	}
 	rec, _ := journal.Get(g.id)
@@ -2143,7 +2309,7 @@ func ledger(entries []zipindex.Entry, groups []group, skipped, screenshots []zip
 			fate = "placeholder"
 		case g.skip:
 			fate = "excluded-trash"
-		case strings.HasPrefix(g.outRel, "not-importable"):
+		case notImportable(&g):
 			fate = "not-importable"
 		}
 		for _, m := range g.members {
@@ -2156,7 +2322,7 @@ func ledger(entries []zipindex.Entry, groups []group, skipped, screenshots []zip
 				fateOf[key] = "excluded-trash"
 				continue
 			}
-			if zipindex.Classify(m.RelFolder) == zipindex.ClassAlbum && !g.placeholder {
+			if zipindex.Classify(m.RelFolder) == zipindex.ClassAlbum && !g.placeholder && fate != "not-importable" {
 				fateOf[key] = "album-clone"
 				continue
 			}
@@ -2178,6 +2344,46 @@ func ledger(entries []zipindex.Entry, groups []group, skipped, screenshots []zip
 		out = append(out, state.Fate{Zip: e.ZipPath, Entry: e.EntryName, Fate: f})
 	}
 	return out
+}
+
+// lockResults takes the results folder's lock. A disk that cannot lock gets
+// a note instead of a refusal.
+func lockResults(opt Options) (func(), error) {
+	release, err := state.Lock(filepath.Join(opt.Results, ".takeout"))
+	if errors.Is(err, state.ErrNoLocking) {
+		fmt.Fprintf(opt.Stdout, "note: %v. Do not start a second takeout on %s while this one runs.\n", err, opt.Results)
+		return release, nil
+	}
+	if errors.Is(err, state.ErrLocked) {
+		return nil, errLocked(err)
+	}
+	return release, err
+}
+
+// nonMedia lists the extensions of files Apple Photos cannot import that
+// turn up in Google Photos folders: documents, archives and app data. Any
+// other unrecognized file stays in the library, since Photos may read it.
+var nonMedia = map[string]bool{
+	".txt": true, ".pdf": true, ".html": true, ".htm": true, ".md": true, ".rtf": true,
+	".doc": true, ".docx": true, ".odt": true, ".pages": true,
+	".xls": true, ".xlsx": true, ".csv": true, ".numbers": true,
+	".ppt": true, ".pptx": true, ".key": true,
+	".zip": true, ".rar": true, ".7z": true,
+	".eml": true, ".log": true, ".xml": true, ".ini": true, ".db": true,
+}
+
+// notImportable says whether a group belongs in not-importable/: a document
+// whose bytes are not media, or a WebM that could not be converted. It is
+// decided by kind, not folder, so a document an earlier version placed in a
+// year folder still counts here.
+func notImportable(g *group) bool {
+	if strings.HasPrefix(g.outRel, "not-importable") {
+		return true
+	}
+	if len(g.members) == 0 || (g.trueType != "" && g.trueType != "unknown") {
+		return false
+	}
+	return nonMedia[strings.ToLower(filepath.Ext(g.members[g.canon].Name))]
 }
 
 func fillReport(rep *Report, groups []group) {
@@ -2213,7 +2419,14 @@ func fillReport(rep *Report, groups []group) {
 		if g.when.HasGPS {
 			rep.WithGPS++
 		}
-		if !g.when.OK || strings.HasPrefix(g.outRel, "not-importable") {
+		if notImportable(&g) {
+			rep.NotImportable++
+			if g.outRel != "" && !strings.HasPrefix(g.outRel, "not-importable") && len(rep.LegacyNonMedia) < maxTagErrorFiles {
+				rep.LegacyNonMedia = append(rep.LegacyNonMedia, filepath.ToSlash(g.outRel))
+			}
+			continue
+		}
+		if !g.when.OK {
 			rep.Unknown++
 			continue
 		}
@@ -2234,7 +2447,9 @@ func fillReport(rep *Report, groups []group) {
 	}
 }
 
-func verifyTags(clients []*exiftool.Client, results string, groups []group, rep *Report) {
+// verifyTags reads back the date of every tagged file. A file whose date is
+// missing or wrong is a tag error. The error is a pool that gave up.
+func verifyTags(ctx context.Context, pool *exiftool.Pool, results string, groups []group, rep *Report) error {
 	type item struct {
 		i    int
 		path string
@@ -2257,9 +2472,9 @@ func verifyTags(clients []*exiftool.Client, results string, groups []group, rep 
 	for i, it := range items {
 		paths[i] = it.path
 	}
-	rows, errs := exiftool.ReadAll(clients, paths, []string{"DateTimeOriginal", "CreationDate"}, false)
-	for _, err := range errs {
-		rep.Errors = append(rep.Errors, "readback: "+err.Error())
+	rows, failed, err := pool.ReadAll(ctx, paths, []string{"DateTimeOriginal", "CreationDate"}, false)
+	if err != nil {
+		return err
 	}
 	for _, it := range items {
 		row := rows[exiftool.PathKey(it.path)]
@@ -2272,41 +2487,30 @@ func verifyTags(clients []*exiftool.Client, results string, groups []group, rep 
 			}
 			if len(rep.TagErrorFiles) < maxTagErrorFiles {
 				rel, _ := filepath.Rel(results, it.path)
-				rep.TagErrorFiles = append(rep.TagErrorFiles, TagErrorFile{Path: filepath.ToSlash(rel),
-					Stderr: fmt.Sprintf("date did not read back: want %s, DateTimeOriginal %q, CreationDate %q", it.day, dto, cre)})
+				why := fmt.Sprintf("date did not read back: want %s, DateTimeOriginal %q, CreationDate %q", it.day, dto, cre)
+				if f, ok := failed[it.path]; ok {
+					why = "date could not be read back: " + f
+				}
+				rep.TagErrorFiles = append(rep.TagErrorFiles, TagErrorFile{Path: filepath.ToSlash(rel), Stderr: why})
 			}
 			if len(rep.Errors) < 30 {
 				rep.Errors = append(rep.Errors, "readback "+filepath.Base(it.path))
 			}
 		}
 	}
-}
-
-// startClients starts n stay_open ExifTool processes, or none on error.
-func startClients(bin string, n int) ([]*exiftool.Client, error) {
-	clients := make([]*exiftool.Client, 0, n)
-	for range n {
-		c, err := exiftool.Start(bin)
-		if err != nil {
-			closeClients(clients)
-			return nil, err
-		}
-		clients = append(clients, c)
-	}
-	return clients, nil
-}
-
-func closeClients(clients []*exiftool.Client) {
-	for _, c := range clients {
-		c.Close()
-	}
+	return nil
 }
 
 func summarizeDry(opt Options, idx *zipindex.Index, groups []group, rep *Report) {
 	resolveDates(groups, opt)
 	for i := range groups {
-		if groups[i].trueType == "" && len(groups[i].members) > 0 {
-			groups[i].trueType = kindFromExt(groups[i].members[groups[i].canon].Name)
+		g := &groups[i]
+		if g.trueType == "" && len(g.members) > 0 {
+			g.trueType = kindFromExt(g.members[g.canon].Name)
+		}
+		// Left out as the run leaves it out, not counted as "unknown date".
+		if !g.placeholder && zipindex.Classify(g.members[g.canon].RelFolder) == zipindex.ClassTrash && !opt.IncludeTrash {
+			g.skip = true
 		}
 	}
 	pairLive(groups, rep)
@@ -2375,6 +2579,9 @@ func summaryText(rep Report) string {
 	fmt.Fprintf(&b, "  unique files      %d\n", rep.Unique)
 	fmt.Fprintf(&b, "  dated             %d\n", rep.Library)
 	fmt.Fprintf(&b, "  unknown date      %d\n", rep.Unknown)
+	if rep.NotImportable > 0 {
+		fmt.Fprintf(&b, "  not importable    %d\n", rep.NotImportable)
+	}
 	fmt.Fprintf(&b, "  with GPS          %d\n", rep.WithGPS)
 	without := rep.Library + rep.Unknown - rep.WithGPS
 	if without < 0 {
@@ -2385,6 +2592,12 @@ func summaryText(rep Report) string {
 	fmt.Fprintf(&b, "  placeholders      %d\n", rep.Placeholders)
 	fmt.Fprintf(&b, "  screenshots out   %d\n", rep.Screenshots)
 	fmt.Fprintf(&b, "  tag errors        %d\n", rep.TagErrors)
+	if rep.ReadErrors > 0 {
+		fmt.Fprintf(&b, "  read errors       %d\n", rep.ReadErrors)
+	}
+	if n := rep.Retries.ExiftoolRestarts; n > 0 {
+		fmt.Fprintf(&b, "  exiftool restarted %d times, see %s\n", n, rep.ExiftoolLog)
+	}
 	if rep.Filesystem != "" {
 		fmt.Fprintf(&b, "  filesystem        %s\n", rep.Filesystem)
 	}
@@ -2405,6 +2618,13 @@ func summaryText(rep Report) string {
 		for _, e := range rep.Errors[:n] {
 			fmt.Fprintf(&b, "  %s\n", e)
 		}
+	}
+	if len(rep.LegacyNonMedia) > 0 {
+		b.WriteString("Non-media files an earlier version put in the library\n")
+		for _, p := range rep.LegacyNonMedia {
+			fmt.Fprintf(&b, "  %s\n", p)
+		}
+		b.WriteString("  Move them out before importing, or start a fresh results folder.\n")
 	}
 	fmt.Fprintf(&b, "\n%s\n", rep.Import)
 	return b.String()
@@ -2632,11 +2852,12 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	if rep.AlbumErrors > 0 {
 		return ExitReconcile, rep, errAlbums(rep.AlbumErrors)
 	}
-	clients, err := startClients(opt.Exiftool, 4)
+	pool, err := startPool(opt, 4, nil)
 	if err != nil {
 		return ExitPreflight, rep, err
 	}
-	defer closeClients(clients)
+	defer pool.Close()
+	defer killOnForce(opt.Force, pool)()
 	// Files with tag errors are known to lack their date; they are exit 4, not
 	// a wrong year.
 	known := map[string]bool{}
@@ -2646,7 +2867,13 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	for _, f := range rep.TagErrorFiles {
 		known[filepath.ToSlash(f.Path)] = true
 	}
-	bad, err := YearMismatches(clients, opt.Results, known)
+	bad, unreadable, err := YearMismatches(ctx, pool, opt.Results, known)
+	if ctx.Err() != nil {
+		return ExitInterrupt, rep, nil
+	}
+	if errors.Is(err, exiftool.ErrPoolBroken) {
+		return ExitPreflight, rep, stopError(err, pool.Path(), opt.Results)
+	}
 	if err != nil {
 		return ExitReconcile, rep, err
 	}
@@ -2656,6 +2883,9 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 			n = 8
 		}
 		return ExitReconcile, rep, fmt.Errorf("%d files are in the wrong year folder, for example: %s", len(bad), strings.Join(bad[:n], "; "))
+	}
+	if len(unreadable) > 0 {
+		return ExitPreflight, rep, errUnreadable(unreadable)
 	}
 	_ = ctx
 	if opt.Stdout != nil {
@@ -2669,20 +2899,46 @@ func Verify(ctx context.Context, opt Options) (int, Report, error) {
 	return ExitOK, rep, nil
 }
 
-// Status prints one line from the journal.
+// Status describes the last run from the journal and, while a run is going
+// or after one stopped early, its phase and count. It never writes anything.
 func Status(results string) string {
+	return status(results, time.Now(), proc.Alive)
+}
+
+// A run's progress file is fresh while its heartbeat runs; a run whose
+// process still exists gets longer, since a sleeping laptop stops the beat.
+const (
+	statusFresh    = 90 * time.Second
+	statusPidFresh = 10 * time.Minute
+)
+
+func status(results string, now time.Time, alive func(int) bool) string {
+	var lines []string
 	b, err := os.ReadFile(filepath.Join(results, ".takeout", "state.jsonl"))
-	if err != nil {
+	if err == nil {
+		lines = append(lines, fmt.Sprintf("journal lines %d", strings.Count(string(b), "\n")))
+	}
+	if st, ok := progress.ReadState(filepath.Join(results, ".takeout", "progress.json")); ok {
+		age := now.Sub(st.UpdatedAt)
+		count := ""
+		if st.Total > 0 {
+			count = fmt.Sprintf(" %d/%d", st.Done, st.Total)
+		}
+		if age < statusFresh || (age < statusPidFresh && alive(st.Pid)) {
+			lines = append(lines, "running: "+st.Phase+count)
+		} else {
+			lines = append(lines, "last run stopped during "+st.Phase+count+". Run the same command to resume.")
+		}
+	}
+	if len(lines) == 0 {
 		return "no run yet"
 	}
-	n := strings.Count(string(b), "\n")
-	line := fmt.Sprintf("journal lines %d", n)
 	if rb, err := os.ReadFile(filepath.Join(results, ".takeout", "report.json")); err == nil {
 		var rep Report
 		if json.Unmarshal(rb, &rep) == nil && rep.TagErrors > 0 {
-			line += fmt.Sprintf("\n%d tag errors, see %s tag_error_files", rep.TagErrors,
-				filepath.Join(results, ".takeout", "report.json"))
+			lines = append(lines, fmt.Sprintf("%d tag errors, see %s tag_error_files", rep.TagErrors,
+				filepath.Join(results, ".takeout", "report.json")))
 		}
 	}
-	return line
+	return strings.Join(lines, "\n")
 }

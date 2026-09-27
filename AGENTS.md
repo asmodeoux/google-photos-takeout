@@ -8,9 +8,9 @@ Commands below are for macOS and Linux. On Windows, use PowerShell and replace `
 
 1. Ask where the zips are and which IANA timezone to use as `--default-tz` before a full run. Do not guess a timezone from the machine.
 2. Run `./takeout.sh doctor`, then `./takeout.sh check --archives <dir>`. `check` only reads. `doctor` writes one probe file under `results/.takeout/doctor-*` and deletes it; it never touches `archives/`. `doctor` exit 2 prints a `Fix:` line; follow it.
-3. Start `./takeout.sh run --archives <dir> --default-tz <zone>` in the background. Poll `./takeout status` every 60 seconds. Do not stream the full log into the chat.
-4. Success is exit code 0 and `./takeout verify` exiting 0. Quote `media`, `library`, `unknown`, `live_pairs`, `placeholders`, and `tag_errors` from `results/.takeout/report.json`, plus `names_rule` and any `album_renames`. On Windows also quote `retries`.
-5. Exit 2: every message has a `Fix:` line and a `See: README.md#...` section. Fix the problem (missing zip, missing ExifTool, disk space) and run again.
+3. Start `./takeout.sh run --archives <dir> --default-tz <zone>` in the background. Poll `./takeout status` every 60 seconds; it prints the phase and count (`running: confirm duplicates 120/400`), or `last run stopped during <phase>` when the run is gone. Do not stream the full log into the chat.
+4. Success is exit code 0 and `./takeout verify` exiting 0. Quote `media`, `library`, `unknown`, `not_importable`, `live_pairs`, `placeholders`, `tag_errors`, `read_errors` and `retries` from `results/.takeout/report.json`, plus `names_rule` and any `album_renames`. Since 1.1.0 `unknown` no longer counts documents or unconverted WebM; they are in `not_importable`. If `legacy_non_media` is set, tell the user those files are in the library folders and should be moved out before importing; do not move them yourself.
+5. Exit 2: every message has a `Fix:` line and a `See: README.md#...` section. Fix the problem (missing zip, missing ExifTool, disk space, ExifTool that keeps crashing) and run the same command again; finished files are kept. For ExifTool crashes, quote `results/.takeout/exiftool.log`.
 6. Exit 130: run the same command again. It resumes.
 7. Exit 3: quote `failed` and `failed_files` from `report.json`. A damaged zip part must be downloaded again by the user; then run the same command. Do not try to repair zips.
 8. Exit 4: the library is usable. Report the tag error count and the paths in `tag_error_files`. Do not delete files to "clean up".

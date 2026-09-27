@@ -33,6 +33,16 @@ func (e *PreflightError) Error() string {
 
 func (e *PreflightError) Unwrap() error { return e.Err }
 
+// RuntimeStopError is a problem found while a run was already writing files,
+// such as an ExifTool that keeps crashing (exit 2). Finished files are kept,
+// and the same command resumes once the problem is fixed. It prints like a
+// PreflightError.
+type RuntimeStopError PreflightError
+
+func (e *RuntimeStopError) Error() string { return (*PreflightError)(e).Error() }
+
+func (e *RuntimeStopError) Unwrap() error { return e.Err }
+
 // DefaultLauncher is how a user starts takeout when no launcher script set
 // TAKEOUT_LAUNCHER.
 func DefaultLauncher(goos string) string {

@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,12 +16,15 @@ import (
 // capture date is a different year. A file in results/2018 must say 2018.
 // Files takeout cannot write tags into, such as CR3 and AVI, are skipped.
 // skip lists results-relative slash paths to leave out.
-func YearMismatches(clients []*exiftool.Client, root string, skip map[string]bool) ([]string, error) {
+// Files ExifTool failed on are listed apart in unreadable, with the reason:
+// that is a problem with ExifTool or the disk, not with the library. A pool
+// that gave up is returned as the error.
+func YearMismatches(ctx context.Context, pool *exiftool.Pool, root string, skip map[string]bool) (bad, unreadable []string, err error) {
 	var files []string
 	years := map[string]string{}
 	entries, err := os.ReadDir(root)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	for _, e := range entries {
 		if !e.IsDir() || !yearName(e.Name()) {
@@ -42,16 +46,19 @@ func YearMismatches(clients []*exiftool.Client, root string, skip map[string]boo
 			return nil
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
-	rows, errs := exiftool.ReadAll(clients, files, []string{"DateTimeOriginal", "CreationDate", "XMP:DateCreated"}, false)
-	if len(errs) > 0 {
-		return nil, fmt.Errorf("exiftool: %w", errs[0])
+	rows, failed, err := pool.ReadAll(ctx, files, []string{"DateTimeOriginal", "CreationDate", "XMP:DateCreated"}, false)
+	if err != nil {
+		return nil, nil, err
 	}
-	var bad []string
 	for _, p := range files {
 		row, ok := rows[exiftool.PathKey(p)]
+		if f, failedHere := failed[p]; !ok && failedHere {
+			unreadable = append(unreadable, fmt.Sprintf("%s (%s)", filepath.Base(p), f))
+			continue
+		}
 		if !ok {
 			bad = append(bad, fmt.Sprintf("%s is in %s but has no readable date", filepath.Base(p), years[p]))
 			continue
@@ -67,7 +74,7 @@ func YearMismatches(clients []*exiftool.Client, root string, skip map[string]boo
 			bad = append(bad, fmt.Sprintf("%s is in %s but its date is %s", filepath.Base(p), years[p], orMissing(got)))
 		}
 	}
-	return bad, nil
+	return bad, unreadable, nil
 }
 
 func yearName(name string) bool {

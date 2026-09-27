@@ -7,6 +7,8 @@ import (
 	"path"
 	"regexp"
 	"strings"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 var (
@@ -17,15 +19,32 @@ var (
 	}
 )
 
-// Key is folder + filename, the only lookup. Names are not matched across folders.
+// Key is folder + filename in NFC: a Takeout re-zipped on a Mac can spell
+// "-modifié" in NFD in one file and NFC in its sidecar. Names are not
+// matched across folders. Two sidecars can share a Key when their names
+// differ only in normal form, so ExactKey is tried first.
 func Key(folder, name string) string {
+	return folder + "\x00" + norm.NFC.String(name)
+}
+
+// ExactKey is folder + filename byte for byte.
+func ExactKey(folder, name string) string {
 	return folder + "\x00" + name
 }
 
 // Candidates lists sidecar filenames to try, most specific first.
 // Every name is complete. A shorter file never matches a longer one.
+// The name as written comes first, then its NFC form, so the localized
+// suffixes and the 51-byte limit also apply when the zip used NFD.
 func Candidates(name string) []string {
-	var out []string
+	out := candidates(name, nil)
+	if nfc := norm.NFC.String(name); nfc != name {
+		out = candidates(nfc, out)
+	}
+	return out
+}
+
+func candidates(name string, out []string) []string {
 	add := func(s string) {
 		if s == "" {
 			return
@@ -129,6 +148,7 @@ func TitleAgrees(mediaName, title string) bool {
 	if title == "" {
 		return true
 	}
+	mediaName, title = norm.NFC.String(mediaName), norm.NFC.String(title)
 	if mediaName == title {
 		return true
 	}
@@ -170,5 +190,5 @@ func LiveStem(name string) string {
 // FoldKey is Key compared without regard to case. Google sometimes writes
 // "IMG.JPG" next to "IMG.jpg.json".
 func FoldKey(folder, name string) string {
-	return folder + "\x00" + strings.ToLower(name)
+	return folder + "\x00" + strings.ToLower(norm.NFC.String(name))
 }

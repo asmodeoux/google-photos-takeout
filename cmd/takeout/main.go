@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,17 +53,22 @@ var commands = map[string][]string{
 	"check": {"archives", "results", "default-tz", "albums", "include-trash", "exclude-screenshots",
 		"names", "exiftool", "quiet", "progress"},
 	"run": {"archives", "results", "default-tz", "albums", "include-trash", "exclude-screenshots",
-		"names", "exiftool", "ffmpeg", "sample", "dry-run", "keep-unzipped", "no-keep-awake", "quiet", "progress"},
+		"names", "exiftool", "exiftool-timeout", "ffmpeg", "sample", "dry-run", "keep-unzipped", "no-keep-awake", "quiet", "progress"},
 	"unzip":         {"archives", "no-keep-awake", "quiet", "progress"},
 	"status":        {"results"},
-	"verify":        {"results", "exiftool"},
+	"verify":        {"results", "exiftool", "exiftool-timeout"},
 	"doctor":        {"results", "exiftool", "ffmpeg"},
 	"import-photos": {"results", "library", "confirm-icloud"},
 }
 
+// minExifTimeout is the shortest --exiftool-timeout: below it, a healthy
+// ExifTool would time out on ordinary files and on the health probe.
+const minExifTimeout = 5 * time.Second
+
 type cli struct {
 	archives, results, tz, albums, namesRule, exif, ff, progress, library string
 	sample                                                                int
+	exifTimeout                                                           time.Duration
 	dry, keep, trash, shots, confirm, quiet, noAwake                      bool
 }
 
@@ -90,6 +96,8 @@ func flags(cmd string, out io.Writer) (*flag.FlagSet, *cli) {
 			fs.StringVar(&c.namesRule, name, "auto", "auto, apple, or portable: which characters output names may keep")
 		case "exiftool":
 			fs.StringVar(&c.exif, name, "", "path to exiftool")
+		case "exiftool-timeout":
+			fs.DurationVar(&c.exifTimeout, name, 2*time.Minute, "shortest time one ExifTool command may take before it is stopped, such as 10m; bigger files get longer")
 		case "ffmpeg":
 			fs.StringVar(&c.ff, name, "", "path to ffmpeg")
 		case "sample":
@@ -123,6 +131,10 @@ func run(cmd string, args []string, stdout, stderr io.Writer) int {
 		}
 		return pipeline.ExitPreflight
 	}
+	if slices.Contains(commands[cmd], "exiftool-timeout") && c.exifTimeout < minExifTimeout {
+		fmt.Fprintf(stderr, "--exiftool-timeout must be at least %s, such as 10m\n", minExifTimeout)
+		return pipeline.ExitPreflight
+	}
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "unexpected argument %q. Flags start with --, for example --archives \"%s\"\n", fs.Arg(0), fs.Arg(0))
 		return pipeline.ExitPreflight
@@ -147,7 +159,7 @@ func run(cmd string, args []string, stdout, stderr io.Writer) int {
 		Archives: c.archives, Results: c.results, DefaultTZ: c.tz, Sample: c.sample,
 		DryRun: c.dry || cmd == "check", KeepUnzipped: c.keep, UnzipOnly: cmd == "unzip",
 		Albums: c.albums, IncludeTrash: c.trash, ExcludeScreenshots: c.shots, Quiet: c.quiet, Progress: c.progress,
-		Exiftool: c.exif, FFmpeg: c.ff, Names: c.namesRule, Force: force, Stdout: stdout, Launcher: launcher,
+		Exiftool: c.exif, ExiftoolTimeout: c.exifTimeout, FFmpeg: c.ff, Names: c.namesRule, Force: force, Stdout: stdout, Launcher: launcher,
 	}
 	if cmd == "verify" {
 		code, _, err := pipeline.Verify(ctx, opt)

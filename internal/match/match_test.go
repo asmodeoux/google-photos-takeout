@@ -1,6 +1,11 @@
 package match
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"golang.org/x/text/unicode/norm"
+)
 
 func has(c []string, want string) bool {
 	for _, s := range c {
@@ -100,5 +105,40 @@ func TestLiveHalvesShareTitle(t *testing.T) {
 		if got := LiveStem(name); got != want {
 			t.Errorf("LiveStem(%q) = %q, want %q", name, got, want)
 		}
+	}
+}
+
+// A Takeout re-zipped on a Mac can store a name in NFD while its sidecar
+// is NFC, or the other way round. Both find the sidecar.
+func TestCandidatesNormalizeNFC(t *testing.T) {
+	nfc := "photo-modifié.jpg"
+	nfd := "photo-modifié.jpg"
+	sidecar := Key("Trip", "photo.jpg.supplemental-metadata.json")
+	for _, name := range []string{nfc, nfd} {
+		found := false
+		for _, c := range Candidates(name) {
+			if Key("Trip", c) == sidecar {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%+q: no candidate for the original's sidecar", name)
+		}
+		if !TitleAgrees(name, "photo.jpg") {
+			t.Errorf("%+q: title does not agree", name)
+		}
+	}
+	if Key("Trip", nfd) != Key("Trip", nfc) || FoldKey("Trip", nfd) != FoldKey("Trip", nfc) {
+		t.Error("keys differ by normal form")
+	}
+	// The name as written comes first, then its NFC form, whose 51-byte
+	// truncation is counted in NFC bytes.
+	long := strings.Repeat("e\u0301", 20) + ".jpg"
+	c := Candidates(long)
+	if c[0] != long+".supplemental-metadata.json" || !has(c, fit51(norm.NFC.String(long)+".supplemental-metadata")) {
+		t.Errorf("candidates %+q", c)
+	}
+	if ExactKey("Trip", nfd) == ExactKey("Trip", nfc) {
+		t.Error("exact keys must keep the normal form")
 	}
 }
