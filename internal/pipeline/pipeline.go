@@ -2504,8 +2504,13 @@ func verifyTags(ctx context.Context, pool *exiftool.Pool, results string, groups
 func summarizeDry(opt Options, idx *zipindex.Index, groups []group, rep *Report) {
 	resolveDates(groups, opt)
 	for i := range groups {
-		if groups[i].trueType == "" && len(groups[i].members) > 0 {
-			groups[i].trueType = kindFromExt(groups[i].members[groups[i].canon].Name)
+		g := &groups[i]
+		if g.trueType == "" && len(g.members) > 0 {
+			g.trueType = kindFromExt(g.members[g.canon].Name)
+		}
+		// Left out as the run leaves it out, not counted as "unknown date".
+		if !g.placeholder && zipindex.Classify(g.members[g.canon].RelFolder) == zipindex.ClassTrash && !opt.IncludeTrash {
+			g.skip = true
 		}
 	}
 	pairLive(groups, rep)

@@ -17,6 +17,7 @@ ExifTool that crashes or hangs no longer costs a run, documents in the Google Ph
 
 - An edited copy whose name is in NFD (`-modifié` from a Takeout re-zipped on a Mac) finds its original's sidecar instead of going to `unknown/`.
 - A file of a type takeout does not recognize keeps its name instead of getting the extension twice (`image.jxl.jxl`).
+- `check` leaves a photo in Trash out of its plan, as the run does, instead of counting it under "unknown date".
 - `verify` goes through the same restarts, exits 2 with a `Fix:` line when ExifTool keeps crashing or cannot read library files (instead of calling them "in the wrong year folder", exit 3), and names each file with the reason.
 - A file whose own tags ExifTool cannot read, even on a second try, is not written to: the camera's date and time zone were replaced with the sidecar's. It is listed in `read_errors` and is a tag error that the next run retries.
 - A second `takeout run` on a results folder in use stops at once, before reading the zips, and no longer overwrites the running one's progress.

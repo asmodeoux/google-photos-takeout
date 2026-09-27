@@ -67,10 +67,10 @@ Review
   sidecars          74
   unique files      86
   dated             79
-  unknown date      4
+  unknown date      3
   not importable    2
   with GPS          11
-  without GPS       72
+  without GPS       71
   live photo pairs  5
   placeholders      1
   ...

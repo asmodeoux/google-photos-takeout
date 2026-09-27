@@ -218,3 +218,29 @@ func TestSidecarsDifferingOnlyInNormalForm(t *testing.T) {
 		}
 	}
 }
+
+// check plans the same outcomes the run reports: a photo in Trash is left
+// out, not counted as "unknown date".
+func TestCheckLeavesTrashOutLikeRun(t *testing.T) {
+	dir := t.TempDir()
+	arch := filepath.Join(dir, "archives")
+	if _, err := testgen.Corpus().Write(arch); err != nil {
+		t.Fatal(err)
+	}
+	for _, trash := range []bool{false, true} {
+		opt := testOptions(arch, filepath.Join(dir, "results"))
+		opt.DryRun, opt.IncludeTrash = true, trash
+		code, rep, err := Run(context.Background(), opt)
+		if code != ExitOK {
+			t.Fatalf("check exit %d: %v", code, err)
+		}
+		left := 1 // Trash/trashed.jpg
+		if trash {
+			left = 0
+		}
+		if sum := rep.Library + rep.Unknown + rep.NotImportable + rep.Placeholders + left; sum != rep.Unique || rep.Unknown != 3 {
+			t.Errorf("include-trash %v: unique %d, library %d unknown %d not_importable %d placeholders %d",
+				trash, rep.Unique, rep.Library, rep.Unknown, rep.NotImportable, rep.Placeholders)
+		}
+	}
+}
