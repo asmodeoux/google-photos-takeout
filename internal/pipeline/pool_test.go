@@ -119,6 +119,7 @@ func TestRunPoolBreaksDuringReadBack(t *testing.T) {
 }
 
 func TestVerifyBrokenExifToolExitsTwo(t *testing.T) {
+	requireTools(t, "exiftool")
 	arch, results := fakeTakeout(t, "a")
 	if code, _, err := Run(context.Background(), testOptions(arch, results)); code != ExitOK {
 		t.Fatalf("run exit %d: %v", code, err)
@@ -173,6 +174,7 @@ func TestRunUnreadableFileKeepsItsTags(t *testing.T) {
 // verify that cannot read a library file says so with exit 2 and names the
 // file; it is not a photo in the wrong year folder (exit 3).
 func TestVerifyUnreadableFileIsNotAWrongYear(t *testing.T) {
+	requireTools(t, "exiftool")
 	arch, results := fakeTakeout(t, "a", "b")
 	if code, rep, err := Run(context.Background(), testOptions(arch, results)); code != ExitOK {
 		t.Fatalf("run exit %d: %v %v", code, err, rep.Errors)
