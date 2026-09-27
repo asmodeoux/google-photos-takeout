@@ -45,6 +45,17 @@ jobs:
         with:
           go-version: "1.26"
 
+      # The release workflow runs the tests without ExifTool, so every test
+      # that needs it must skip there, not fail. This runs before ExifTool is
+      # installed; the steps after it require the tools again.
+      - name: go test with no ExifTool on PATH
+        shell: bash
+        env:
+          TAKEOUT_REQUIRE_TOOLS: ""
+        run: |
+          if command -v exiftool; then echo "ExifTool is already on PATH; this step needs it absent" >&2; exit 1; fi
+          go test ./...
+
       - uses: ./.github/actions/exiftool
 
       - name: ffmpeg

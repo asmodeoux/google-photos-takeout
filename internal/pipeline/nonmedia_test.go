@@ -222,6 +222,7 @@ func TestSidecarsDifferingOnlyInNormalForm(t *testing.T) {
 // check plans the same outcomes the run reports: a photo in Trash is left
 // out, not counted as "unknown date".
 func TestCheckLeavesTrashOutLikeRun(t *testing.T) {
+	requireTools(t, "exiftool")
 	dir := t.TempDir()
 	arch := filepath.Join(dir, "archives")
 	if _, err := testgen.Corpus().Write(arch); err != nil {
