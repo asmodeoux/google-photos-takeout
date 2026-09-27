@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased (1.1.0)
+## 1.1.0 (2026-09-26)
 
 ExifTool that crashes or hangs no longer costs a run, documents in the Google Photos folder stay out of the library, and `takeout status` says where a run is.
 
